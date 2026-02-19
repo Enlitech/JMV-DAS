@@ -17,7 +17,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("JMV-DAS Demo")
+        self.setWindowTitle("JMV-DAS Infrastructure Secure")
         self.resize(1100, 700)
 
         central = QWidget()
