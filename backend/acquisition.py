@@ -3,7 +3,7 @@ import queue
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from backend.explorex import PyExploreX
+from backend.pyexplorex import PyExploreX
 
 
 class AcquisitionWorker(QObject):
