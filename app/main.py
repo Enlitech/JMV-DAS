@@ -113,9 +113,16 @@ class MainWindow(QMainWindow):
 
     def on_start_clicked(self):
         try:
+            scan_rate_label = self.scan_rate.currentText()   # "1k/2k/4k/10k"
+            mode_label = self.mode.currentText()
+            pulse_width = int(self.pulse_width.value())
+            scale_down = int(self.scale_down.value())
+
             self.status.setText("Status: Starting...")
-            self.worker.start()
-            self.status.setText("Status: Running")
+            self.worker.start(scan_rate_label, mode_label, pulse_width, scale_down)
+            self.status.setText(
+                f"Status: Running (cfg_scan={scan_rate_label}, cfg_mode={mode_label}, pw={pulse_width}, sd={scale_down})"
+            )
         except Exception as e:
             self.status.setText(f"Status: Start failed: {e}")
 
@@ -126,7 +133,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status.setText(f"Status: Stop failed: {e}")
 
-    def on_data_ready(self, payload: object):
+    def on_data_ready(self, payload: dict):
         """
         payload: (scan_rate, point_count, num_lines, block2d_float32)
         """
@@ -155,7 +162,15 @@ class MainWindow(QMainWindow):
         self._latest_payload = None
 
         try:
-            scan_rate, point_count, num_lines, block = payload
+            cfg_scan = payload["cfg_scan_rate"]
+            cfg_mode = payload["cfg_mode"]
+            pw = payload["cfg_pulse_width"]
+            sd = payload["cfg_scale_down"]
+
+            point_count = int(payload["point_count"])
+            num_lines = int(payload["cb_lines"])
+            block = payload["block"]
+
             point_count = int(point_count)
             num_lines = int(num_lines)
             if point_count <= 0 or num_lines <= 0:
@@ -201,7 +216,7 @@ class MainWindow(QMainWindow):
             self._render_waterfall()
 
             self.status.setText(
-                f"Status: Running (scan_rate={scan_rate}, point_count={point_count}, lines={num_lines})"
+                f"Status: Running (cfg_scan={cfg_scan}, cb_lines={num_lines}, point_count={point_count})"
             )
 
         except Exception as e:
