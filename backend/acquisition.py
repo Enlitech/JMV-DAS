@@ -7,13 +7,13 @@ from backend.pyexplorex import PyExploreX
 
 
 class AcquisitionWorker(QObject):
-    # payload: (scan_rate:int, point_count:int, arr:np.ndarray)
+    # payload: (scan_rate:int, point_count:int, arr:np.ndarray[float32])
     data_ready = Signal(object)
 
     def __init__(self):
         super().__init__()
         self.handler = PyExploreX()
-        self.queue = queue.Queue(maxsize=50)  # 防止生产过快撑爆内存
+        self.queue = queue.Queue(maxsize=50)
         self.running = False
         self._consumer_thread = None
 
@@ -25,7 +25,6 @@ class AcquisitionWorker(QObject):
         self.handler.setParams(scaleDown=3)
         self.handler.setBlockCount()
 
-        # 注册回调（这里只接 amp ch1，你可后续加 phase/ch2）
         self.handler.setAmpDataCallback(self._amp_callback)
 
         if self.handler.open() != 0:
@@ -37,8 +36,6 @@ class AcquisitionWorker(QObject):
             return
 
         self.running = True
-
-        # 启动消费线程
         self._consumer_thread = threading.Thread(target=self._process_loop, daemon=True)
         self._consumer_thread.start()
 
@@ -57,7 +54,7 @@ class AcquisitionWorker(QObject):
         except Exception:
             pass
 
-        # 尽量清空队列，避免退出时堆积
+        # 清空队列
         try:
             while True:
                 self.queue.get_nowait()
@@ -66,18 +63,17 @@ class AcquisitionWorker(QObject):
 
     def _amp_callback(self, scan_rate, point_count, data_ptr, size):
         """
-        C 回调线程：只做极轻的工作 -> bytes->np，然后丢进 queue。
+        data 是 float32 buffer（来自 vendor cpp 示例）
         """
         try:
-            # data_ptr: POINTER(c_char)
             raw = bytes(data_ptr[:size])
 
-            # !!! dtype 需要按你的真实数据格式调整 !!!
-            arr = np.frombuffer(raw, dtype=np.int16)
+            # float32
+            arr = np.frombuffer(raw, dtype=np.float32)
 
             payload = (int(scan_rate), int(point_count), arr)
 
-            # queue 满了就丢掉旧数据（演示软件更重要的是“最新画面”）
+            # queue 满了丢旧的（演示软件优先最新画面）
             if self.queue.full():
                 try:
                     self.queue.get_nowait()
@@ -88,9 +84,6 @@ class AcquisitionWorker(QObject):
             print(f"_amp_callback error: {e}")
 
     def _process_loop(self):
-        """
-        Python 线程：从 queue 拿数据，通过 Qt signal 发送到 UI 线程。
-        """
         while self.running:
             try:
                 payload = self.queue.get(timeout=1)
