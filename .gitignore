@@ -100,8 +100,3 @@ pytest_cache/
 
 .env
 .env.*
-
-
-*.dll
-*.so
-*.so*
