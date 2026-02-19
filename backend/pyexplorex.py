@@ -41,8 +41,8 @@ if os.name == "nt":
     # Load shared library
     lib = ctypes.CDLL('explorex_c.dll')
 elif os.name == "posix":
-    os.environ['LD_LIBRARY_PATH'] += f'{dll_dir}linux'
-    lib = ctypes.cdll.LoadLibrary(f'{dll_dir}linux/libexplorex_c.so')
+    so_path = os.path.join(dll_dir, "linux", "libexplorex_c.so")
+    lib = ctypes.CDLL(so_path)
     pass
 
 # Define Function Prototype
