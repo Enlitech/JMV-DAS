@@ -1,6 +1,6 @@
 # JMV-DAS Infrastructure Secure
 
-JMV-DAS is a lightweight Qt-based acquisition and visualization application for ExploreX-based DAS systems.
+JMV-DAS is a Qt-based acquisition and visualization application for ExploreX-based DAS systems.
 
 It provides:
 
