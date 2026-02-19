@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout()
         central.setLayout(main_layout)
 
-        # Left control panel
+        # -------- Left controls --------
         control_layout = QVBoxLayout()
 
         self.scan_rate = QComboBox()
@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.status)
         control_layout.addStretch()
 
-        # Right display (waterfall)
+        # -------- Right display --------
         self.display = QLabel("Waterfall Display")
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
@@ -84,9 +84,7 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(control_layout, 0)
         main_layout.addWidget(self.display, 1)
 
-        # -------------------------
-        # Worker
-        # -------------------------
+        # -------- Worker --------
         self.worker = AcquisitionWorker()
         self.worker.data_ready.connect(self.on_data_ready)
 
@@ -94,14 +92,12 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self.on_stop_clicked)
         self.btn_open.clicked.connect(self.on_open_clicked)
 
-        # -------------------------
-        # Waterfall buffer (dynamic)
-        # -------------------------
+        # -------- Waterfall buffer --------
         self.wf_width = None
         self.wf_height = 600
-        self.wf = None  # np.uint8[H,W]
+        self.wf = None  # uint8 HxW
 
-        # 控制 UI 刷新频率：用 timer 统一刷新更稳
+        # 最新 payload 缓存 + timer 刷新
         self._latest_payload = None
         self._last_update_ts = 0.0
         self._min_ui_interval = 1.0 / 30.0  # 30 FPS
@@ -111,9 +107,9 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
-    # -------------------------
-    # UI handlers
-    # -------------------------
+        # 视觉：是否反相（背景亮/事件暗通常要反相）
+        self.invert = True
+
     def on_open_clicked(self):
         self.status.setText("Status: Open is noop (Start will open).")
 
@@ -132,20 +128,17 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status.setText(f"Status: Stop failed: {e}")
 
-    # -------------------------
-    # Data path
-    # -------------------------
     def on_data_ready(self, payload: object):
-        """
-        payload: (scan_rate:int, point_count:int, arr:np.ndarray)
-        """
+        # payload: (scan_rate, point_count, arr_float32)
         self._latest_payload = payload
 
     def _ensure_waterfall(self, width: int):
-        if self.wf_width == width and self.wf is not None:
+        width = int(width)
+        if width <= 0:
             return
-
-        self.wf_width = int(width)
+        if self.wf is not None and self.wf_width == width:
+            return
+        self.wf_width = width
         self.wf = np.zeros((self.wf_height, self.wf_width), dtype=np.uint8)
         self.status.setText(f"Status: Waterfall resized to {self.wf_width}x{self.wf_height}")
 
@@ -165,45 +158,49 @@ class MainWindow(QMainWindow):
             scan_rate, point_count, arr = payload
             if not isinstance(arr, np.ndarray):
                 return
-            if arr.ndim != 1:
-                arr = arr.ravel()
+            arr = np.asarray(arr, dtype=np.float32).ravel()
 
-            # 动态适配宽度
-            width = int(point_count) if int(point_count) > 0 else arr.size
+            width = int(point_count) if int(point_count) > 0 else 0
             if width <= 0:
                 return
 
             self._ensure_waterfall(width)
+            if self.wf is None:
+                return
 
-            # 取一行数据：尽量使用 arr 前 width 个点
+            # 取“最新一行”：这里假设回调给的是一行（或至少前 width 是一行）
+            # 如果 vendor 实际给的是一个 block（多行），我们后面可以升级为一次塞多行
             if arr.size >= width:
                 line = arr[:width]
             else:
-                pad = np.zeros((width - arr.size,), dtype=arr.dtype)
+                pad = np.zeros((width - arr.size,), dtype=np.float32)
                 line = np.concatenate([arr, pad], axis=0)
 
-            # ---- 映射到 0..255 灰度（robust scaling）----
-            x = line.astype(np.float32)
+            # robust scaling（对 float 信号更合理）
+            x = line
 
             lo = np.percentile(x, 5)
             hi = np.percentile(x, 95)
-            if hi - lo < 1e-6:
-                lo = float(np.min(x))
-                hi = float(np.max(x)) + 1e-6
+            if not np.isfinite(lo) or not np.isfinite(hi) or (hi - lo) < 1e-12:
+                lo = float(np.nanmin(x))
+                hi = float(np.nanmax(x)) + 1e-6
 
             x = (x - lo) / (hi - lo)
             x = np.clip(x, 0.0, 1.0)
 
-            # 若你希望“背景更亮、事件更暗”，可以反相：
-            # gray = ((1.0 - x) * 255.0).astype(np.uint8)
-            gray = (x * 255.0).astype(np.uint8)
+            if self.invert:
+                gray = ((1.0 - x) * 255.0).astype(np.uint8)
+            else:
+                gray = (x * 255.0).astype(np.uint8)
 
-            # ---- 滚动 ----
+            # 滚动
             self.wf[:-1, :] = self.wf[1:, :]
             self.wf[-1, :] = gray
 
             self._render_waterfall()
-            self.status.setText(f"Status: Running (scan_rate={scan_rate}, point_count={point_count}, arr={arr.size})")
+            self.status.setText(
+                f"Status: Running (scan_rate={scan_rate}, point_count={point_count}, arr={arr.size}, dtype=float32)"
+            )
 
         except Exception as e:
             self.status.setText(f"Status: Render error: {e}")
@@ -219,7 +216,7 @@ class MainWindow(QMainWindow):
             img.data,
             w,
             h,
-            w,  # bytesPerLine
+            w,
             QImage.Format_Grayscale8
         )
 
