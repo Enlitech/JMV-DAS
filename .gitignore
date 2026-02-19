@@ -59,9 +59,6 @@ ui_*.py
 # IDE
 # =========================
 
-# VS Code
-.vscode/
-
 # PyCharm
 .idea/
 
