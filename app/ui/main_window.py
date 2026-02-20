@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.db_vmax)
         control_layout.addWidget(QLabel("Gamma"))
         control_layout.addWidget(self.gamma)
+        control_layout.addWidget(self.invert)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
