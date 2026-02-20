@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
 
         self.scale_down = QSpinBox()
         self.scale_down.setRange(1, 10)
-        self.scale_down.setValue(3)
+        self.scale_down.setValue(10)
 
         # ---- Waterfall selector ----
         self.wf_channel = QComboBox()
