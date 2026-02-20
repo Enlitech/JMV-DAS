@@ -86,7 +86,6 @@ class MainWindow(QMainWindow):
         self.tf_invert.setChecked(True)
 
         # Buttons
-        self.btn_open = QPushButton("Open (noop)")
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
 
@@ -123,7 +122,6 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.tf_invert)
 
         control_layout.addSpacing(16)
-        control_layout.addWidget(self.btn_open)
         control_layout.addWidget(self.btn_start)
         control_layout.addWidget(self.btn_stop)
 
@@ -146,7 +144,6 @@ class MainWindow(QMainWindow):
 
         self.btn_start.clicked.connect(self.on_start_clicked)
         self.btn_stop.clicked.connect(self.on_stop_clicked)
-        self.btn_open.clicked.connect(self.on_open_clicked)
 
         # ---- Data cache ----
         self._latest_by_stream = {}  # (ch, kind) -> payload
@@ -176,9 +173,6 @@ class MainWindow(QMainWindow):
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
-
-    def on_open_clicked(self):
-        self.status.setText("Status: Open is noop (Start will open).")
 
     def on_start_clicked(self):
         try:
