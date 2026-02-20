@@ -32,7 +32,6 @@ class WaterfallTransform:
 
         # rolling energy params
         self.energy_win = 32   # window length in "lines"
-        self.use_dB = True  # log10 or natural log
 
     def apply(self, block: np.ndarray) -> np.ndarray:
         x = np.asarray(block, dtype=np.float32)
@@ -52,10 +51,7 @@ class WaterfallTransform:
 
         if self.mode == "Energy (MSE dB)":
             feat = self._rolling_mse_energy(x, win=self.energy_win)  # >= 0
-            if self.use_dB:
-                feat = 10 * np.log10(feat + float(self.eps))
-            else:
-                feat = np.log(feat + float(self.eps))
+            feat = 10 * np.log10(feat + float(self.eps))
             return self._absrange_to_gray(feat, vmin=self.vmin, vmax=self.vmax)
 
         # default: Linear
@@ -93,7 +89,7 @@ class WaterfallTransform:
         denom0 = (np.arange(0, idx0 + 1, dtype=np.float32) + 1.0).reshape(-1, 1)
         out[:idx0 + 1] = csum[:idx0 + 1] / denom0
 
-        if T > win:
+        if T >= win:
             # for t >= win-1: use window [t-win+1 .. t]
             # sum = csum[t] - csum[t-win]
             sums = csum[win - 1:] - np.vstack([np.zeros((1, x.shape[1]), dtype=np.float32), csum[:-win]])
