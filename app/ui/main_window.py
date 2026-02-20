@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
         self.wf_channel = QComboBox()
         self.wf_channel.addItems(["1", "2"])
         self.wf_kind = QComboBox()
-        self.wf_kind.addItems(["amp", "phase"])
+        self.wf_kind.addItems(["phase", "amp"])
 
         # ---- Energy(MSE dB) params ----
         self.energy_win = QSpinBox()
@@ -111,8 +111,8 @@ class MainWindow(QMainWindow):
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Waterfall Channel"))
         control_layout.addWidget(self.wf_channel)
-        control_layout.addWidget(QLabel("Waterfall Kind"))
-        control_layout.addWidget(self.wf_kind)
+        # control_layout.addWidget(QLabel("Waterfall Kind"))
+        # control_layout.addWidget(self.wf_kind)
 
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Transform: Energy (MSE dB)"))
