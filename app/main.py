@@ -46,6 +46,12 @@ class MainWindow(QMainWindow):
         self.scale_down.setRange(1, 10)
         self.scale_down.setValue(3)
 
+        # ---- Waterfall selector ----
+        self.wf_channel = QComboBox()
+        self.wf_channel.addItems(["1", "2"])
+        self.wf_kind = QComboBox()
+        self.wf_kind.addItems(["amp", "phase"])
+
         self.btn_open = QPushButton("Open (noop)")
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
@@ -61,6 +67,12 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.pulse_width)
         control_layout.addWidget(QLabel("Scale Down"))
         control_layout.addWidget(self.scale_down)
+
+        control_layout.addSpacing(12)
+        control_layout.addWidget(QLabel("Waterfall Channel"))
+        control_layout.addWidget(self.wf_channel)
+        control_layout.addWidget(QLabel("Waterfall Kind"))
+        control_layout.addWidget(self.wf_kind)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_open)
@@ -93,8 +105,9 @@ class MainWindow(QMainWindow):
         self.wf_height = 600
         self.wf = None  # uint8[H,W]
 
-        # 最新 block 缓存（只保留一个，避免 UI 堵）
-        self._latest_payload = None
+        # 每个 stream 一份最新数据，避免 4 路互相覆盖
+        # key: (channel:int, kind:str) -> payload
+        self._latest_by_stream = {}
 
         # UI 刷新频率限制
         self._last_update_ts = 0.0
@@ -107,6 +120,14 @@ class MainWindow(QMainWindow):
 
         # 视觉：背景亮、事件暗（通常要反相）
         self.invert = True
+
+        # 切换选择时，让界面尽快刷新（不用等到下个数据）
+        self.wf_channel.currentIndexChanged.connect(self._poke_refresh)
+        self.wf_kind.currentIndexChanged.connect(self._poke_refresh)
+
+    def _poke_refresh(self):
+        # 让 tick 允许立刻刷新一次
+        self._last_update_ts = 0.0
 
     def on_open_clicked(self):
         self.status.setText("Status: Open is noop (Start will open).")
@@ -135,9 +156,17 @@ class MainWindow(QMainWindow):
 
     def on_data_ready(self, payload: dict):
         """
-        payload: (scan_rate, point_count, num_lines, block2d_float32)
+        payload expected keys:
+          cfg_scan_rate, cfg_mode, cfg_pulse_width, cfg_scale_down,
+          channel, kind, cb_lines, point_count, block
         """
-        self._latest_payload = payload
+        try:
+            ch = int(payload.get("channel", 1))
+            kind = str(payload.get("kind", "amp"))
+            self._latest_by_stream[(ch, kind)] = payload
+        except Exception:
+            # 防御性：不让 UI 因 payload 异常崩掉
+            pass
 
     def _ensure_waterfall(self, width: int):
         width = int(width)
@@ -150,7 +179,16 @@ class MainWindow(QMainWindow):
         self.status.setText(f"Status: Waterfall resized to {self.wf_width}x{self.wf_height}")
 
     def _tick(self):
-        if self._latest_payload is None:
+        # 当前选择的 stream
+        try:
+            sel_ch = int(self.wf_channel.currentText())
+        except Exception:
+            sel_ch = 1
+        sel_kind = self.wf_kind.currentText() or "amp"
+
+        key = (sel_ch, sel_kind)
+        payload = self._latest_by_stream.get(key)
+        if payload is None:
             return
 
         now = time.time()
@@ -158,21 +196,19 @@ class MainWindow(QMainWindow):
             return
         self._last_update_ts = now
 
-        payload = self._latest_payload
-        self._latest_payload = None
+        # 消费掉这一帧（只处理最新帧）
+        self._latest_by_stream.pop(key, None)
 
         try:
-            cfg_scan = payload["cfg_scan_rate"]
-            cfg_mode = payload["cfg_mode"]
-            pw = payload["cfg_pulse_width"]
-            sd = payload["cfg_scale_down"]
+            cfg_scan = payload.get("cfg_scan_rate", "")
+            cfg_mode = payload.get("cfg_mode", "")
+            pw = payload.get("cfg_pulse_width", "")
+            sd = payload.get("cfg_scale_down", "")
 
             point_count = int(payload["point_count"])
             num_lines = int(payload["cb_lines"])
             block = payload["block"]
 
-            point_count = int(point_count)
-            num_lines = int(num_lines)
             if point_count <= 0 or num_lines <= 0:
                 return
 
@@ -181,6 +217,8 @@ class MainWindow(QMainWindow):
                 # 防御性处理
                 block = block.reshape((-1, point_count))
                 num_lines = block.shape[0]
+                if num_lines <= 0:
+                    return
 
             self._ensure_waterfall(point_count)
             if self.wf is None:
@@ -204,8 +242,11 @@ class MainWindow(QMainWindow):
             else:
                 gray_block = (x * 255.0).astype(np.uint8)
 
-            # ---- 将多行写入 waterfall：向上滚动 num_lines 行，把新块贴到底部 ----
-            n = gray_block.shape[0]
+            # ---- 将多行写入 waterfall：向上滚动 n 行，把新块贴到底部 ----
+            n = int(gray_block.shape[0])
+            if n <= 0:
+                return
+
             if n >= self.wf_height:
                 # 块太大：只取最后 wf_height 行
                 self.wf[:, :] = gray_block[-self.wf_height:, :]
@@ -216,7 +257,7 @@ class MainWindow(QMainWindow):
             self._render_waterfall()
 
             self.status.setText(
-                f"Status: Running (cfg_scan={cfg_scan}, cb_lines={num_lines}, point_count={point_count})"
+                f"Status: Running (show=ch{sel_ch}/{sel_kind}, cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, cb_lines={num_lines}, points={point_count})"
             )
 
         except Exception as e:
@@ -233,7 +274,7 @@ class MainWindow(QMainWindow):
             img.data,
             w,
             h,
-            w,
+            w,  # bytesPerLine for Grayscale8 is width * 1
             QImage.Format_Grayscale8
         )
 
