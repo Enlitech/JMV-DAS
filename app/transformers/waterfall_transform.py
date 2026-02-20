@@ -27,8 +27,8 @@ class WaterfallTransform:
         self.eps = 1e-6
 
         # absolute scaling params (for Energy (MSE dB) or any ABS-range mode you add)
-        self.vmin = -60.0   # applied AFTER log10
-        self.vmax = 0.0    # applied AFTER log10
+        self.vmin = -30.0   # applied AFTER log10
+        self.vmax = 30.0    # applied AFTER log10
 
         # rolling energy params
         self.energy_win = 32   # window length in "lines"
