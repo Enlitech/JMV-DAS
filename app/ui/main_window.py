@@ -18,6 +18,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # ---- Transform/Renderer ----
+        self.transform = WaterfallTransform()
+        self.transform.mode = "Energy (MSE dB)"  # default & only mode used
+        self.renderer = WaterfallRenderer(wf_height=600)
+
         self.setWindowTitle("JMV-DAS Infrastructure Secure")
         self.resize(1100, 700)
 
@@ -63,13 +68,13 @@ class MainWindow(QMainWindow):
         self.db_vmin.setRange(-2000.0, 2000.0)
         self.db_vmin.setDecimals(2)
         self.db_vmin.setSingleStep(1.0)
-        self.db_vmin.setValue(-60.0)
+        self.db_vmin.setValue(self.transform.vmin)
 
         self.db_vmax = QDoubleSpinBox()
         self.db_vmax.setRange(-2000.0, 2000.0)
         self.db_vmax.setDecimals(2)
         self.db_vmax.setSingleStep(1.0)
-        self.db_vmax.setValue(0.0)
+        self.db_vmax.setValue(self.transform.vmax)
 
         self.gamma = QDoubleSpinBox()
         self.gamma.setRange(0.1, 5.0)
@@ -119,9 +124,6 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.db_vmax)
         control_layout.addWidget(QLabel("Gamma"))
         control_layout.addWidget(self.gamma)
-        control_layout.addWidget(QLabel("Eps (for log10)"))
-        control_layout.addWidget(self.eps)
-        control_layout.addWidget(self.invert)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
@@ -158,11 +160,6 @@ class MainWindow(QMainWindow):
 
         # ---- Data cache ----
         self._latest_by_stream = {}  # (ch, kind) -> payload
-
-        # ---- Transform/Renderer ----
-        self.transform = WaterfallTransform()
-        self.transform.mode = "Energy (MSE dB)"  # default & only mode used
-        self.renderer = WaterfallRenderer(wf_height=600)
 
         # ---- UI refresh throttling ----
         self._last_update_ts = 0.0
