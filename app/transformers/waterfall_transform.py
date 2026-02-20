@@ -51,7 +51,7 @@ class WaterfallTransform:
 
         if self.mode == "Energy (MSE dB)":
             feat = self._rolling_mse_energy(x, win=self.energy_win)  # >= 0
-            feat = 10 * np.log10(feat + float(self.eps))
+            feat = 10.0 * np.log10(feat + float(self.eps))
             return self._absrange_to_gray(feat, vmin=self.vmin, vmax=self.vmax)
 
         # default: Linear
