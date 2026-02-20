@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
     def on_data_ready(self, payload: dict):
         try:
             ch = int(payload.get("channel", 1))
-            kind = str(payload.get("kind", "amp"))
+            kind = str(payload.get("kind", "phase"))
             self._latest_by_stream[(ch, kind)] = payload
         except Exception:
             pass
@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
             sel_ch = int(self.wf_channel.currentText())
         except Exception:
             sel_ch = 1
-        sel_kind = self.wf_kind.currentText() or "amp"
+        sel_kind = self.wf_kind.currentText() or "phase"
         key = (sel_ch, sel_kind)
         payload = self._latest_by_stream.get(key)
         if payload is None:
