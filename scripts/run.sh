@@ -3,4 +3,4 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/.venv/bin/activate"
-exec python app.main
+exec python -m app.main
