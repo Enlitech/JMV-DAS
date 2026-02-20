@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
 )
 
 from backend.acquisition import AcquisitionWorker
-from transformers.waterfall_transform import WaterfallTransform
-from viz.waterfall_renderer import WaterfallRenderer
+from ..transformers.waterfall_transform import WaterfallTransform
+from ..viz.waterfall_renderer import WaterfallRenderer
 
 
 class MainWindow(QMainWindow):
