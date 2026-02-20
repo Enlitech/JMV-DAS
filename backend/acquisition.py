@@ -29,7 +29,7 @@ class AcquisitionWorker(QObject):
         self.cfg_scan_rate_label = "10k"
         self.cfg_mode_label = "Coherent Suppression"
         self.cfg_pulse_width = 100
-        self.cfg_scale_down = 3
+        self.cfg_scale_down = 5
 
     # ---- mapping helpers ----
     @staticmethod
