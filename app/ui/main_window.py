@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout()
         central.setLayout(main_layout)
 
-        # ---- Left controls ----
+        # ---- Left controls (in scroll) ----
         control_layout = QVBoxLayout()
 
         # Acquisition params
@@ -54,36 +54,37 @@ class MainWindow(QMainWindow):
         self.wf_kind = QComboBox()
         self.wf_kind.addItems(["amp", "phase"])
 
-        # Transform params
-        self.tf_mode = QComboBox()
-        self.tf_mode.addItems(["Linear", "Abs", "Log(dB)", "HP(MeanRemove)"])
+        # ---- Energy(MSE dB) params ----
+        self.energy_win = QSpinBox()
+        self.energy_win.setRange(1, 4096)
+        self.energy_win.setValue(32)
 
-        self.tf_p_lo = QDoubleSpinBox()
-        self.tf_p_lo.setRange(0.0, 100.0)
-        self.tf_p_lo.setDecimals(1)
-        self.tf_p_lo.setSingleStep(1.0)
-        self.tf_p_lo.setValue(5.0)
+        self.db_vmin = QDoubleSpinBox()
+        self.db_vmin.setRange(-2000.0, 2000.0)
+        self.db_vmin.setDecimals(2)
+        self.db_vmin.setSingleStep(1.0)
+        self.db_vmin.setValue(-60.0)
 
-        self.tf_p_hi = QDoubleSpinBox()
-        self.tf_p_hi.setRange(0.0, 100.0)
-        self.tf_p_hi.setDecimals(1)
-        self.tf_p_hi.setSingleStep(1.0)
-        self.tf_p_hi.setValue(95.0)
+        self.db_vmax = QDoubleSpinBox()
+        self.db_vmax.setRange(-2000.0, 2000.0)
+        self.db_vmax.setDecimals(2)
+        self.db_vmax.setSingleStep(1.0)
+        self.db_vmax.setValue(0.0)
 
-        self.tf_gamma = QDoubleSpinBox()
-        self.tf_gamma.setRange(0.1, 5.0)
-        self.tf_gamma.setDecimals(2)
-        self.tf_gamma.setSingleStep(0.05)
-        self.tf_gamma.setValue(1.0)
+        self.gamma = QDoubleSpinBox()
+        self.gamma.setRange(0.1, 5.0)
+        self.gamma.setDecimals(2)
+        self.gamma.setSingleStep(0.05)
+        self.gamma.setValue(1.0)
 
-        self.tf_eps = QDoubleSpinBox()
-        self.tf_eps.setRange(1e-12, 1.0)
-        self.tf_eps.setDecimals(12)
-        self.tf_eps.setSingleStep(1e-6)
-        self.tf_eps.setValue(1e-6)
+        self.eps = QDoubleSpinBox()
+        self.eps.setRange(1e-12, 1.0)
+        self.eps.setDecimals(12)
+        self.eps.setSingleStep(1e-6)
+        self.eps.setValue(1e-6)
 
-        self.tf_invert = QCheckBox("Invert (background bright)")
-        self.tf_invert.setChecked(True)
+        self.invert = QCheckBox("Invert (background bright)")
+        self.invert.setChecked(True)
 
         # Buttons
         self.btn_start = QPushButton("Start")
@@ -109,17 +110,18 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.wf_kind)
 
         control_layout.addSpacing(12)
-        control_layout.addWidget(QLabel("Transform"))
-        control_layout.addWidget(self.tf_mode)
-        control_layout.addWidget(QLabel("Percentile Lo"))
-        control_layout.addWidget(self.tf_p_lo)
-        control_layout.addWidget(QLabel("Percentile Hi"))
-        control_layout.addWidget(self.tf_p_hi)
+        control_layout.addWidget(QLabel("Transform: Energy (MSE dB)"))
+        control_layout.addWidget(QLabel("Energy Window (lines)"))
+        control_layout.addWidget(self.energy_win)
+        control_layout.addWidget(QLabel("dB vmin"))
+        control_layout.addWidget(self.db_vmin)
+        control_layout.addWidget(QLabel("dB vmax"))
+        control_layout.addWidget(self.db_vmax)
         control_layout.addWidget(QLabel("Gamma"))
-        control_layout.addWidget(self.tf_gamma)
-        control_layout.addWidget(QLabel("Eps (for Log)"))
-        control_layout.addWidget(self.tf_eps)
-        control_layout.addWidget(self.tf_invert)
+        control_layout.addWidget(self.gamma)
+        control_layout.addWidget(QLabel("Eps (for log10)"))
+        control_layout.addWidget(self.eps)
+        control_layout.addWidget(self.invert)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
@@ -127,7 +129,6 @@ class MainWindow(QMainWindow):
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.status)
-        # NOTE: In a scroll area, addStretch() is optional; we omit it to avoid odd spacing.
 
         # ---- Right display ----
         self.display = QLabel("Waterfall Display")
@@ -143,7 +144,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(control_widget)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(280)  # adjust if needed (260/300/320)
+        scroll.setMinimumWidth(280)
 
         main_layout.addWidget(scroll, 0)
         main_layout.addWidget(self.display, 1)
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
 
         # ---- Transform/Renderer ----
         self.transform = WaterfallTransform()
+        self.transform.mode = "Energy (MSE dB)"  # default & only mode used
         self.renderer = WaterfallRenderer(wf_height=600)
 
         # ---- UI refresh throttling ----
@@ -174,12 +176,12 @@ class MainWindow(QMainWindow):
         # When selection/params change, allow next tick immediately
         self.wf_channel.currentIndexChanged.connect(self._poke_refresh)
         self.wf_kind.currentIndexChanged.connect(self._poke_refresh)
-        self.tf_mode.currentIndexChanged.connect(self._poke_refresh)
-        self.tf_p_lo.valueChanged.connect(self._poke_refresh)
-        self.tf_p_hi.valueChanged.connect(self._poke_refresh)
-        self.tf_gamma.valueChanged.connect(self._poke_refresh)
-        self.tf_eps.valueChanged.connect(self._poke_refresh)
-        self.tf_invert.stateChanged.connect(self._poke_refresh)
+        self.energy_win.valueChanged.connect(self._poke_refresh)
+        self.db_vmin.valueChanged.connect(self._poke_refresh)
+        self.db_vmax.valueChanged.connect(self._poke_refresh)
+        self.gamma.valueChanged.connect(self._poke_refresh)
+        self.eps.valueChanged.connect(self._poke_refresh)
+        self.invert.stateChanged.connect(self._poke_refresh)
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -228,12 +230,14 @@ class MainWindow(QMainWindow):
         return payload, sel_ch, sel_kind
 
     def _sync_transform_params(self):
-        self.transform.mode = self.tf_mode.currentText()
-        self.transform.p_lo = float(self.tf_p_lo.value())
-        self.transform.p_hi = float(self.tf_p_hi.value())
-        self.transform.gamma = float(self.tf_gamma.value())
-        self.transform.eps = float(self.tf_eps.value())
-        self.transform.invert = bool(self.tf_invert.isChecked())
+        # Only Energy(MSE dB) is used
+        self.transform.mode = "Energy (MSE dB)"
+        self.transform.energy_win = int(self.energy_win.value())
+        self.transform.vmin = float(self.db_vmin.value())
+        self.transform.vmax = float(self.db_vmax.value())
+        self.transform.gamma = float(self.gamma.value())
+        self.transform.eps = float(self.eps.value())
+        self.transform.invert = bool(self.invert.isChecked())
 
     def _tick(self):
         payload, sel_ch, sel_kind = self._pull_selected_payload()
@@ -276,9 +280,11 @@ class MainWindow(QMainWindow):
             self.renderer.render_to_label(self.display)
 
             self.status.setText(
-                f"Status: Running (show=ch{sel_ch}/{sel_kind}, tf={self.transform.mode}, "
-                f"p=({self.transform.p_lo:.1f},{self.transform.p_hi:.1f}), gamma={self.transform.gamma:.2f}, "
-                f"cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, lines={num_lines}, points={point_count})"
+                f"Status: Running (show=ch{sel_ch}/{sel_kind}, tf=Energy(MSE dB), "
+                f"win={self.transform.energy_win}, dB=({self.transform.vmin:.1f},{self.transform.vmax:.1f}), "
+                f"gamma={self.transform.gamma:.2f}, "
+                f"cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, "
+                f"lines={num_lines}, points={point_count})"
             )
 
         except Exception as e:
