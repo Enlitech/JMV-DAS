@@ -11,7 +11,7 @@ class WaterfallTransform:
       - "Log(dB)"             : 20*log10(abs(raw)+eps) percentile scaling
       - "HP(MeanRemove)"      : raw - row_mean percentile scaling
 
-      - "EnergyLog(MSE)"      : per-position rolling window MSE energy -> log10 -> ABS range scaling
+      - "Energy (MSE dB)"      : per-position rolling window MSE energy -> dB -> ABS range scaling
                                (window along time axis, i.e. rows)
     """
     def __init__(self):
@@ -26,13 +26,13 @@ class WaterfallTransform:
         self.invert = True
         self.eps = 1e-6
 
-        # absolute scaling params (for EnergyLog(MSE) or any ABS-range mode you add)
-        self.vmin = -6.0   # applied AFTER log10
+        # absolute scaling params (for Energy (MSE dB) or any ABS-range mode you add)
+        self.vmin = -60.0   # applied AFTER log10
         self.vmax = 0.0    # applied AFTER log10
 
         # rolling energy params
         self.energy_win = 32   # window length in "lines"
-        self.use_log10 = True  # log10 or natural log
+        self.use_dB = True  # log10 or natural log
 
     def apply(self, block: np.ndarray) -> np.ndarray:
         x = np.asarray(block, dtype=np.float32)
@@ -50,10 +50,10 @@ class WaterfallTransform:
             feat = x - np.mean(x, axis=1, keepdims=True)
             return self._percentile_to_gray(feat)
 
-        if self.mode == "EnergyLog(MSE)":
+        if self.mode == "Energy (MSE dB)":
             feat = self._rolling_mse_energy(x, win=self.energy_win)  # >= 0
-            if self.use_log10:
-                feat = np.log10(feat + float(self.eps))
+            if self.use_dB:
+                feat = 10 * np.log10(feat + float(self.eps))
             else:
                 feat = np.log(feat + float(self.eps))
             return self._absrange_to_gray(feat, vmin=self.vmin, vmax=self.vmax)
