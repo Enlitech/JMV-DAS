@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QSpinBox,
-    QDoubleSpinBox, QCheckBox
+    QDoubleSpinBox, QCheckBox, QScrollArea
 )
 
 from backend.acquisition import AcquisitionWorker
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Status: Idle")
         self.status.setWordWrap(True)
 
-        # Layout
+        # Layout (controls)
         control_layout.addWidget(QLabel("Scan Rate"))
         control_layout.addWidget(self.scan_rate)
         control_layout.addWidget(QLabel("Mode"))
@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.status)
-        control_layout.addStretch()
+        # NOTE: In a scroll area, addStretch() is optional; we omit it to avoid odd spacing.
 
         # ---- Right display ----
         self.display = QLabel("Waterfall Display")
@@ -135,7 +135,17 @@ class MainWindow(QMainWindow):
         self.display.setStyleSheet("background-color: black; color: white;")
         self.display.setMinimumSize(800, 600)
 
-        main_layout.addLayout(control_layout, 0)
+        # ---- Put controls into a scroll area ----
+        control_widget = QWidget()
+        control_widget.setLayout(control_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidget(control_widget)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(280)  # adjust if needed (260/300/320)
+
+        main_layout.addWidget(scroll, 0)
         main_layout.addWidget(self.display, 1)
 
         # ---- Worker ----
