@@ -169,15 +169,15 @@ class MainWindow(QMainWindow):
 
         self.ts_view = QChartView(self._ts_chart)
         self.ts_view.setRenderHint(QPainter.Antialiasing, True)
-        self.ts_view.setMinimumHeight(180)
-        self.ts_view.setMaximumHeight(220)   # 你想更矮就改这里
+        self.ts_view.setMinimumHeight(320)
+        self.ts_view.setMaximumHeight(320)   # 你想更矮就改这里
 
         # Waterfall display (original)
         self.display = QLabel("Waterfall Display")
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
-        self.display.setMinimumSize(800, 420)   # 让它比原来矮一些（你可再调）
-
+        self.display.setMinimumSize(800, 320)   # 让它比原来矮一些（你可再调）
+ # 让它比原来矮一些（你可再调）
         right_layout.addWidget(self.ts_view, 0)
         right_layout.addWidget(self.display, 1)
 
