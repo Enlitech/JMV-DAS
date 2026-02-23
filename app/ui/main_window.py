@@ -237,9 +237,12 @@ class MainWindow(QMainWindow):
         self.eps.valueChanged.connect(self._poke_refresh)
         self.invert.stateChanged.connect(self._poke_refresh)
         self.ts_col.valueChanged.connect(self._poke_refresh)
+        self.ts_col.valueChanged.connect(self._update_ts_title)
 
         self._wf_src_w = 0   # renderer.wf_width == point_count
         self._wf_src_h = 0   # renderer.wf_height
+
+        self._update_ts_title()
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -476,6 +479,10 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             self.status.setText(f"Status: Render error: {e}")
+
+    def _update_ts_title(self):
+        col = int(self.ts_col.value())
+        self._ts_chart.setTitle(f"Time Series @ column {col}")
 
     def closeEvent(self, event):
         try:
