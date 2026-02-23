@@ -9,6 +9,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QCheckBox, QScrollArea
 )
 
+from collections import deque
+from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtGui import QPainter
+
 from backend.acquisition import AcquisitionWorker
 from ..transformers.waterfall_transform import WaterfallTransform
 from ..viz.waterfall_renderer import WaterfallRenderer
@@ -58,6 +62,11 @@ class MainWindow(QMainWindow):
         self.wf_channel.addItems(["1", "2"])
         self.wf_kind = QComboBox()
         self.wf_kind.addItems(["phase", "amp"])
+
+        # ---- Time-series selection ----
+        self.ts_col = QSpinBox()
+        self.ts_col.setRange(0, 0)     # 先占位，等拿到 point_count 再更新范围
+        self.ts_col.setValue(0)
 
         # ---- Energy(MSE dB) params ----
         self.energy_win = QSpinBox()
@@ -113,6 +122,8 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.wf_channel)
         # control_layout.addWidget(QLabel("Waterfall Kind"))
         # control_layout.addWidget(self.wf_kind)
+        control_layout.addWidget(QLabel("Time Series Column (pos idx)"))
+        control_layout.addWidget(self.ts_col)
 
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Transform: Energy (MSE dB)"))
@@ -132,12 +143,43 @@ class MainWindow(QMainWindow):
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.status)
+      
+        # ---- Right panel: time-series (top) + waterfall (bottom) ----
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_widget.setLayout(right_layout)
 
-        # ---- Right display ----
+        # Time-series chart
+        self._ts_series = QLineSeries()
+        self._ts_chart = QChart()
+        self._ts_chart.legend().hide()
+        self._ts_chart.addSeries(self._ts_series)
+        self._ts_chart.setTitle("Time Series @ fixed column")
+
+        self._ts_axis_x = QValueAxis()
+        self._ts_axis_y = QValueAxis()
+        self._ts_axis_x.setTitleText("t (s)")
+        self._ts_axis_y.setTitleText("value")
+        self._ts_chart.addAxis(self._ts_axis_x, Qt.AlignBottom)
+        self._ts_chart.addAxis(self._ts_axis_y, Qt.AlignLeft)
+        self._ts_series.attachAxis(self._ts_axis_x)
+        self._ts_series.attachAxis(self._ts_axis_y)
+
+        self.ts_view = QChartView(self._ts_chart)
+        self.ts_view.setRenderHint(QPainter.Antialiasing, True)
+        self.ts_view.setMinimumHeight(180)
+        self.ts_view.setMaximumHeight(220)   # 你想更矮就改这里
+
+        # Waterfall display (original)
         self.display = QLabel("Waterfall Display")
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
-        self.display.setMinimumSize(800, 600)
+        self.display.setMinimumSize(800, 420)   # 让它比原来矮一些（你可再调）
+
+        right_layout.addWidget(self.ts_view, 0)
+        right_layout.addWidget(self.display, 1)
 
         # ---- Put controls into a scroll area ----
         control_widget = QWidget()
@@ -150,7 +192,7 @@ class MainWindow(QMainWindow):
         scroll.setMinimumWidth(280)
 
         main_layout.addWidget(scroll, 0)
-        main_layout.addWidget(self.display, 1)
+        main_layout.addWidget(right_widget, 1)
 
         # ---- Worker ----
         self.worker = AcquisitionWorker()
@@ -161,6 +203,13 @@ class MainWindow(QMainWindow):
 
         # ---- Data cache ----
         self._latest_by_stream = {}  # (ch, kind) -> payload
+
+        # ---- Time-series cache ----
+        self._ts_y = deque(maxlen=4000)   # 你想更长就改这里
+        self._ts_t = deque(maxlen=4000)
+        self._ts_last_t = 0.0
+        self._ts_dt = 0.001               # default, will be updated from scan rate
+        self._ts_last_point_count = None
 
         # ---- UI refresh throttling ----
         self._last_update_ts = 0.0
@@ -180,6 +229,7 @@ class MainWindow(QMainWindow):
         self.gamma.valueChanged.connect(self._poke_refresh)
         self.eps.valueChanged.connect(self._poke_refresh)
         self.invert.stateChanged.connect(self._poke_refresh)
+        self.ts_col.valueChanged.connect(self._poke_refresh)
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -237,6 +287,72 @@ class MainWindow(QMainWindow):
         self.transform.eps = float(self.eps.value())
         self.transform.invert = bool(self.invert.isChecked())
 
+    def _parse_scan_rate_hz(self, scan_rate_label: str) -> float:
+        # "1k" -> 1000, "10k" -> 10000
+        try:
+            s = (scan_rate_label or "").strip().lower()
+            if s.endswith("k"):
+                return float(s[:-1]) * 1000.0
+            return float(s)
+        except Exception:
+            return 1000.0
+
+    def _update_timeseries_from_block(self, block: np.ndarray, cfg_scan: str, point_count: int):
+        # block: [num_lines, point_count]
+        # pick selected column
+        col = int(self.ts_col.value())
+        if col < 0:
+            col = 0
+        if col >= point_count:
+            col = point_count - 1 if point_count > 0 else 0
+
+        # update spin range if point_count changed
+        if self._ts_last_point_count != point_count:
+            self._ts_last_point_count = point_count
+            self.ts_col.blockSignals(True)
+            self.ts_col.setRange(0, max(0, point_count - 1))
+            self.ts_col.blockSignals(False)
+            col = min(col, max(0, point_count - 1))
+
+        # dt from scan rate
+        hz = self._parse_scan_rate_hz(cfg_scan)
+        if hz <= 0:
+            hz = 1000.0
+        self._ts_dt = 1.0 / hz
+
+        y = block[:, col].astype(np.float32, copy=False)
+
+        # append to cache
+        for v in y:
+            self._ts_last_t += self._ts_dt
+            self._ts_t.append(self._ts_last_t)
+            self._ts_y.append(float(v))
+
+        # render into QtCharts
+        n = len(self._ts_y)
+        if n < 2:
+            return
+
+        # build series points
+        self._ts_series.clear()
+        t0 = self._ts_t[0]
+        t1 = self._ts_t[-1]
+        ymin = min(self._ts_y)
+        ymax = max(self._ts_y)
+        if ymin == ymax:
+            ymin -= 1e-6
+            ymax += 1e-6
+
+        # 下采样一下，避免点太多导致 UI 卡（你可调整 target）
+        target = 800
+        step = max(1, n // target)
+
+        for i in range(0, n, step):
+            self._ts_series.append(self._ts_t[i], self._ts_y[i])
+
+        self._ts_axis_x.setRange(t0, t1)
+        self._ts_axis_y.setRange(ymin, ymax)
+
     def _tick(self):
         payload, sel_ch, sel_kind = self._pull_selected_payload()
         if payload is None:
@@ -267,6 +383,7 @@ class MainWindow(QMainWindow):
                 if num_lines <= 0:
                     return
 
+            self._update_timeseries_from_block(block, cfg_scan, point_count)
             self._sync_transform_params()
 
             self.renderer.ensure(point_count)
