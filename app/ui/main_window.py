@@ -176,8 +176,7 @@ class MainWindow(QMainWindow):
         self.display = QLabel("Waterfall Display")
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
-        self.display.setMinimumSize(800, 320)   # 让它比原来矮一些（你可再调）
- # 让它比原来矮一些（你可再调）
+        self.display.setMinimumSize(800, 320)   # 让它比原来矮一些（你可再调
         right_layout.addWidget(self.ts_view, 0)
         right_layout.addWidget(self.display, 1)
 
