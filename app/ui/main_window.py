@@ -1,7 +1,7 @@
 import time
 import numpy as np
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
@@ -177,6 +177,14 @@ class MainWindow(QMainWindow):
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
         self.display.setMinimumSize(800, 320)   # 让它比原来矮一些（你可再调
+
+        # enable click-to-select-column on waterfall
+        self.display.setMouseTracking(True)
+        self.display.installEventFilter(self)
+
+        # store latest point_count for mapping click x -> column
+        self._last_point_count_for_click = 0
+
         right_layout.addWidget(self.ts_view, 0)
         right_layout.addWidget(self.display, 1)
 
@@ -229,6 +237,9 @@ class MainWindow(QMainWindow):
         self.eps.valueChanged.connect(self._poke_refresh)
         self.invert.stateChanged.connect(self._poke_refresh)
         self.ts_col.valueChanged.connect(self._poke_refresh)
+
+        self._wf_src_w = 0   # renderer.wf_width == point_count
+        self._wf_src_h = 0   # renderer.wf_height
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -285,6 +296,63 @@ class MainWindow(QMainWindow):
         self.transform.gamma = float(self.gamma.value())
         self.transform.eps = float(self.eps.value())
         self.transform.invert = bool(self.invert.isChecked())
+
+    def _x_to_col_exact(self, x_px: float) -> int:
+        """
+        Exact mapping for WaterfallRenderer.render_to_label:
+        - pixmap scaled to label.size() with Qt.IgnoreAspectRatio
+        => full label area corresponds to full wf image (no padding).
+        - We map label pixel coordinate to source column with pixel-center mapping.
+        """
+        src_w = int(self._wf_src_w or 0)  # == point_count
+        if src_w <= 1:
+            return 0
+
+        dst_w = int(self.display.width())
+        if dst_w <= 1:
+            return 0
+
+        # Clamp click into [0, dst_w)
+        x = float(x_px)
+        if x < 0.0:
+            x = 0.0
+        if x > (dst_w - 1):
+            x = float(dst_w - 1)
+
+        # Pixel-center mapping:
+        # dst pixel center at (x + 0.5) maps to source coordinate in [0, src_w)
+        # u = (x+0.5)/dst_w * src_w
+        # src index = floor(u)
+        u = (x + 0.5) * src_w / dst_w
+        col = int(u)  # floor
+
+        if col < 0:
+            col = 0
+        if col > src_w - 1:
+            col = src_w - 1
+        return col
+
+
+    def eventFilter(self, obj, event):
+        # Click waterfall to select column
+        if obj is self.display and event.type() == QEvent.MouseButtonPress:
+            try:
+                # Qt6: QMouseEvent.position() -> QPointF
+                pos = event.position()
+                col = self._x_to_col_exact(pos.x())
+
+                # update spinbox (this will also poke refresh via valueChanged)
+                self.ts_col.setValue(col)
+
+                self._ts_y.clear()
+                self._ts_t.clear()
+
+                # optional: show quick feedback
+                # self.status.setText(f"Clicked x={pos.x():.1f} -> col={col}")
+            except Exception:
+                pass
+            return True  # consume
+        return super().eventFilter(obj, event)
 
     def _parse_scan_rate_hz(self, scan_rate_label: str) -> float:
         # "1k" -> 1000, "10k" -> 10000
@@ -372,6 +440,8 @@ class MainWindow(QMainWindow):
             num_lines = int(payload["cb_lines"])
             block = payload["block"]
 
+            self._last_point_count_for_click = point_count
+
             if point_count <= 0 or num_lines <= 0:
                 return
 
@@ -388,6 +458,9 @@ class MainWindow(QMainWindow):
             self.renderer.ensure(point_count)
             if self.renderer.wf is None:
                 return
+            
+            self._wf_src_w = int(self.renderer.wf_width or point_count or 0)
+            self._wf_src_h = int(self.renderer.wf_height or 0)
 
             gray_block = self.transform.apply(block)
             self.renderer.push_block(gray_block)
