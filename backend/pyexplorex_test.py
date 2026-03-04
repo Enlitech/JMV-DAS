@@ -1,59 +1,131 @@
+import numpy as np
 from . import pyexplorex
 
-# create object
 handler = pyexplorex.PyExploreX()
 
+amp_ch1_blocks = []
+phase_ch1_blocks = []
+amp_ch2_blocks = []
+phase_ch2_blocks = []
+
+
+def parse_block(scan_rate, point_count, data_ptr, size):
+
+    cb_lines = int(scan_rate)
+    point_count = int(point_count)
+    size = int(size)
+
+    raw = bytes(data_ptr[:size])
+
+    arr = np.frombuffer(raw, dtype=np.float32)
+
+    total = arr.size
+
+    if cb_lines * point_count <= total:
+        num_lines = cb_lines
+    else:
+        num_lines = total // point_count
+
+    arr = arr[:num_lines * point_count]
+
+    block = arr.reshape((num_lines, point_count))
+
+    return block
+
+
 def test_amp_cb_ch1(scan_rate, point_count, data_ptr, size):
-    print("[ch1] test amp recv data:", data_ptr[0:150])
-    pass
+
+    block = parse_block(scan_rate, point_count, data_ptr, size)
+
+    amp_ch1_blocks.append(block)
+
+    print("[ch1 amp] block:", block.shape)
 
 
 def test_phase_cb_ch1(scan_rate, point_count, data_ptr, size):
-    print("[ch1] test phase recv data:", data_ptr[0:150])
-    pass
+
+    block = parse_block(scan_rate, point_count, data_ptr, size)
+
+    phase_ch1_blocks.append(block)
+
+    print("[ch1 phase] block:", block.shape)
+
 
 def test_amp_cb_ch2(scan_rate, point_count, data_ptr, size):
-    print("[ch2] test amp recv data:", data_ptr[0:150])
-    pass
+
+    block = parse_block(scan_rate, point_count, data_ptr, size)
+
+    amp_ch2_blocks.append(block)
+
+    print("[ch2 amp] block:", block.shape)
 
 
 def test_phase_cb_ch2(scan_rate, point_count, data_ptr, size):
-    print("[ch2] test phase recv data:", data_ptr[0:150])
-    pass
 
-# Start a collector
-print("version: ", handler.version())
+    block = parse_block(scan_rate, point_count, data_ptr, size)
 
-# Start a collector
+    phase_ch2_blocks.append(block)
+
+    print("[ch2 phase] block:", block.shape)
+
+
+print("version:", handler.version())
+
 handler.create()
-# Set collection parameters
-handler.setParams(aom=pyexplorex.Aom.Aom80, scanRate=pyexplorex.ScanRate.Rate10, mode=pyexplorex.Mode.CoherentSuppression, pulseWidth=100, scaleDown=3)
-# Set memory block size
+
+handler.setParams(
+    aom=pyexplorex.Aom.Aom80,
+    scanRate=pyexplorex.ScanRate.Rate10,
+    mode=pyexplorex.Mode.CoherentSuppression,
+    pulseWidth=100,
+    scaleDown=3
+)
+
 handler.setBlockCount()
-# Set channel 1 amplitude data callback
+
 handler.setAmpDataCallback(test_amp_cb_ch1)
-# Set channel 1 phase data callback
 handler.setPhaseDataCallback(test_phase_cb_ch1)
-# Set channel 2 amplitude data callback
 handler.setAmpDataCallbackCh2(test_amp_cb_ch2)
-# Set channel 2 phase data callback
 handler.setPhaseDataCallbackCh2(test_phase_cb_ch2)
 
-# Open the collection card
+
 open_ret = handler.open()
-if (open_ret != 0) :
-    print("fail to open, ret:", open_ret)
+
+if open_ret != 0:
+    print("fail to open:", open_ret)
+
 else:
+
     print("open success")
-    # Start collecting
+
     start_ret = handler.start()
 
-    if (open_ret != 0) :
-        print("fail to start, ret:", open_ret)
+    if start_ret != 0:
+        print("fail to start:", start_ret)
+
     else:
-        user_input = input("输入任意字符结束...")
-    # Stop collecting
+        input("输入任意字符结束采集...")
+
     handler.stop()
 
-# Destroy the collector
 handler.destroy()
+
+print("saving data...")
+
+if amp_ch1_blocks:
+    amp_ch1 = np.concatenate(amp_ch1_blocks, axis=0)
+    np.save("amp_ch1.npy", amp_ch1)
+
+if phase_ch1_blocks:
+    phase_ch1 = np.concatenate(phase_ch1_blocks, axis=0)
+    np.save("phase_ch1.npy", phase_ch1)
+
+if amp_ch2_blocks:
+    amp_ch2 = np.concatenate(amp_ch2_blocks, axis=0)
+    np.save("amp_ch2.npy", amp_ch2)
+
+if phase_ch2_blocks:
+    phase_ch2 = np.concatenate(phase_ch2_blocks, axis=0)
+    np.save("phase_ch2.npy", phase_ch2)
+
+print("done.")
