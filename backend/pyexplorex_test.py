@@ -1,4 +1,4 @@
-from pyexplorex import pyexplorex
+from .pyexplorex import pyexplorex
 
 # create object
 handler = pyexplorex.PyExploreX()
