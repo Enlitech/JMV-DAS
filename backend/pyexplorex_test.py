@@ -78,7 +78,7 @@ handler.setParams(
     scanRate=pyexplorex.ScanRate.Rate10,
     mode=pyexplorex.Mode.CoherentSuppression,
     pulseWidth=100,
-    scaleDown=3
+    scaleDown=10
 )
 
 handler.setBlockCount()
