@@ -14,6 +14,7 @@ from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtGui import QPainter
 
 from backend.acquisition import AcquisitionWorker
+from .distance_axis import DistanceAxis
 from ..transformers.waterfall_transform import WaterfallTransform
 from ..viz.waterfall_renderer import WaterfallRenderer
 
@@ -181,12 +182,14 @@ class MainWindow(QMainWindow):
         # enable click-to-select-column on waterfall
         self.display.setMouseTracking(True)
         self.display.installEventFilter(self)
+        self.distance_axis = DistanceAxis()
 
         # store latest point_count for mapping click x -> column
         self._last_point_count_for_click = 0
 
         right_layout.addWidget(self.ts_view, 0)
         right_layout.addWidget(self.display, 1)
+        right_layout.addWidget(self.distance_axis, 0)
 
         # ---- Put controls into a scroll area ----
         control_widget = QWidget()
@@ -238,14 +241,40 @@ class MainWindow(QMainWindow):
         self.invert.stateChanged.connect(self._poke_refresh)
         self.ts_col.valueChanged.connect(self._poke_refresh)
         self.ts_col.valueChanged.connect(self._update_ts_title)
+        self.ts_col.valueChanged.connect(self._update_distance_axis_from_ui)
+        self.scale_down.valueChanged.connect(self._update_distance_axis_from_ui)
 
         self._wf_src_w = 0   # renderer.wf_width == point_count
         self._wf_src_h = 0   # renderer.wf_height
 
         self._update_ts_title()
+        self._update_distance_axis_from_ui()
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
+
+    def _update_distance_axis_from_ui(self, *args):
+        self.distance_axis.set_axis_state(
+            point_count=int(self._wf_src_w or 0),
+            scale_down=int(self.scale_down.value()),
+            selected_col=int(self.ts_col.value()),
+        )
+
+    def _current_column_distance_text(self, point_count: int, scale_down: int) -> str:
+        if point_count <= 0:
+            return "col=0, dist=n/a"
+
+        col = min(max(0, int(self.ts_col.value())), point_count - 1)
+        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
+        return f"col={col}, dist={self.distance_axis._format_distance(distance_m)}"
+
+    def _current_column_distance_label(self, point_count: int, scale_down: int) -> str:
+        if point_count <= 0:
+            return "column 0"
+
+        col = min(max(0, int(self.ts_col.value())), point_count - 1)
+        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
+        return f"column {col} ({self.distance_axis._format_distance(distance_m)})"
 
     def on_start_clicked(self):
         try:
@@ -349,9 +378,10 @@ class MainWindow(QMainWindow):
 
                 self._ts_y.clear()
                 self._ts_t.clear()
+                self._update_distance_axis_from_ui()
 
-                # optional: show quick feedback
-                # self.status.setText(f"Clicked x={pos.x():.1f} -> col={col}")
+            # optional: show quick feedback
+            # self.status.setText(f"Clicked x={pos.x():.1f} -> col={col}")
             except Exception:
                 pass
             return True  # consume
@@ -437,7 +467,7 @@ class MainWindow(QMainWindow):
             cfg_scan = payload.get("cfg_scan_rate", "")
             cfg_mode = payload.get("cfg_mode", "")
             pw = payload.get("cfg_pulse_width", "")
-            sd = payload.get("cfg_scale_down", "")
+            sd = int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value())
 
             point_count = int(payload["point_count"])
             num_lines = int(payload["cb_lines"])
@@ -464,6 +494,11 @@ class MainWindow(QMainWindow):
             
             self._wf_src_w = int(self.renderer.wf_width or point_count or 0)
             self._wf_src_h = int(self.renderer.wf_height or 0)
+            self.distance_axis.set_axis_state(
+                point_count=point_count,
+                scale_down=sd,
+                selected_col=int(self.ts_col.value()),
+            )
 
             gray_block = self.transform.apply(block)
             self.renderer.push_block(gray_block)
@@ -474,15 +509,17 @@ class MainWindow(QMainWindow):
                 f"win={self.transform.energy_win}, dB=({self.transform.vmin:.1f},{self.transform.vmax:.1f}), "
                 f"gamma={self.transform.gamma:.2f}, "
                 f"cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, "
-                f"lines={num_lines}, points={point_count})"
+                f"lines={num_lines}, points={point_count}, "
+                f"{self._current_column_distance_text(point_count, sd)})"
             )
 
         except Exception as e:
             self.status.setText(f"Status: Render error: {e}")
 
     def _update_ts_title(self):
-        col = int(self.ts_col.value())
-        self._ts_chart.setTitle(f"Time Series @ column {col}")
+        self._ts_chart.setTitle(
+            f"Time Series @ {self._current_column_distance_label(self._wf_src_w, self.scale_down.value())}"
+        )
 
     def closeEvent(self, event):
         try:
