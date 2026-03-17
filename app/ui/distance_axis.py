@@ -15,6 +15,8 @@ class DistanceAxis(QWidget):
         self._point_count = 0
         self._scale_down = 1
         self._selected_col = 0
+        self._view_start_col = 0
+        self._view_point_count = 0
 
         self.setMinimumHeight(56)
         self.setMaximumHeight(56)
@@ -33,7 +35,14 @@ class DistanceAxis(QWidget):
             return 0.0
         return (self._point_count - 1) * self.spacing_m()
 
-    def set_axis_state(self, point_count: int, scale_down: int, selected_col: int):
+    def set_axis_state(
+        self,
+        point_count: int,
+        scale_down: int,
+        selected_col: int,
+        view_start_col: int | None = None,
+        view_point_count: int | None = None,
+    ):
         point_count = max(0, int(point_count))
         scale_down = max(1, int(scale_down))
         selected_col = max(0, int(selected_col))
@@ -43,23 +52,49 @@ class DistanceAxis(QWidget):
         else:
             selected_col = 0
 
-        state = (point_count, scale_down, selected_col)
-        old_state = (self._point_count, self._scale_down, self._selected_col)
+        if view_start_col is None:
+            view_start_col = 0
+        if view_point_count is None:
+            view_point_count = point_count
+
+        if point_count > 0:
+            view_start_col = max(0, min(int(view_start_col), point_count - 1))
+            view_point_count = max(1, min(int(view_point_count), point_count - view_start_col))
+        else:
+            view_start_col = 0
+            view_point_count = 0
+
+        state = (point_count, scale_down, selected_col, view_start_col, view_point_count)
+        old_state = (
+            self._point_count,
+            self._scale_down,
+            self._selected_col,
+            self._view_start_col,
+            self._view_point_count,
+        )
         if state == old_state:
             return
 
         self._point_count = point_count
         self._scale_down = scale_down
         self._selected_col = selected_col
+        self._view_start_col = view_start_col
+        self._view_point_count = view_point_count
         self.setToolTip(
             (
                 f"Distance axis: {self.spacing_m():.3f} m/sample, "
-                f"max {self.max_distance_m():.1f} m"
+                f"view {self._format_distance(self._view_start_col * self.spacing_m())}"
+                f" - {self._format_distance(self._view_end_col() * self.spacing_m())}"
             )
             if point_count > 0
             else "Distance axis: waiting for data"
         )
         self.update()
+
+    def _view_end_col(self) -> int:
+        if self._view_point_count <= 0:
+            return self._view_start_col
+        return self._view_start_col + self._view_point_count - 1
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -88,28 +123,34 @@ class DistanceAxis(QWidget):
         painter.setPen(QPen(QColor("#404040"), 1))
         painter.drawLine(x0, axis_y, x1, axis_y)
 
-        if self._point_count <= 1 or span_px <= 1:
+        if self._point_count <= 1 or self._view_point_count <= 0 or span_px <= 1:
             painter.setPen(QColor("#707070"))
             painter.drawText(left, bottom_text_y, "Waiting for acquisition data")
             return
 
-        max_distance = self.max_distance_m()
+        view_start_distance = self._view_start_col * self.spacing_m()
+        view_end_distance = self._view_end_col() * self.spacing_m()
+        view_span_distance = max(0.0, view_end_distance - view_start_distance)
+
         target_major_intervals = max(6, min(10, span_px // 120))
-        tick_step = self._nice_step(max_distance / target_major_intervals) if max_distance > 0 else 1.0
+        tick_step = self._nice_step(view_span_distance / target_major_intervals) if view_span_distance > 0 else 1.0
         minor_step = tick_step / 2.0
 
-        if minor_step > 0 and max_distance > 0:
+        if minor_step > 0 and view_span_distance > 0:
             painter.setPen(QPen(QColor("#707070"), 1))
-            tick = minor_step
-            while tick < max_distance:
-                x = x0 + int(round((tick / max_distance) * span_px))
+            tick = math.ceil(view_start_distance / minor_step) * minor_step
+            while tick < view_end_distance:
+                x = x0 + int(round(((tick - view_start_distance) / view_span_distance) * span_px))
                 painter.drawLine(x, axis_y, x, axis_y + 3)
-                tick += tick_step
+                tick += minor_step
 
-        tick = 0.0
+        tick = math.ceil(view_start_distance / tick_step) * tick_step if tick_step > 0 else view_start_distance
         painter.setPen(QPen(QColor("#404040"), 1))
-        while tick <= max_distance + tick_step * 0.5:
-            x = x0 + int(round((tick / max_distance) * span_px)) if max_distance > 0 else x0
+        while tick <= view_end_distance + tick_step * 0.5:
+            x = (
+                x0 + int(round(((tick - view_start_distance) / view_span_distance) * span_px))
+                if view_span_distance > 0 else x0
+            )
             painter.drawLine(x, axis_y, x, axis_y + 6)
 
             text = self._format_distance(tick)
@@ -119,13 +160,13 @@ class DistanceAxis(QWidget):
             tick += tick_step
 
         selected_distance = self._selected_col * self.spacing_m()
-        if max_distance > 0:
-            selected_x = x0 + int(round((selected_distance / max_distance) * span_px))
-        else:
-            selected_x = x0
-
-        painter.setPen(QPen(QColor("#b03030"), 1))
-        painter.drawLine(selected_x, axis_y - 6, selected_x, axis_y + 10)
+        if view_start_distance <= selected_distance <= view_end_distance and view_span_distance > 0:
+            selected_x = x0 + int(round(((selected_distance - view_start_distance) / view_span_distance) * span_px))
+            painter.setPen(QPen(QColor("#b03030"), 1))
+            painter.drawLine(selected_x, axis_y - 6, selected_x, axis_y + 10)
+        elif view_span_distance == 0:
+            painter.setPen(QPen(QColor("#b03030"), 1))
+            painter.drawLine(x0, axis_y - 6, x0, axis_y + 10)
 
         selected_text = f"col {self._selected_col}: {self._format_distance(selected_distance)}"
         selected_width = fm.horizontalAdvance(selected_text)

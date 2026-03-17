@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
         self.display.setAlignment(Qt.AlignCenter)
         self.display.setStyleSheet("background-color: black; color: white;")
         self.display.setMinimumSize(800, 320)   # 让它比原来矮一些（你可再调
+        self.display.setCursor(Qt.OpenHandCursor)
 
         # enable click-to-select-column on waterfall
         self.display.setMouseTracking(True)
@@ -241,12 +242,20 @@ class MainWindow(QMainWindow):
         self.eps.valueChanged.connect(self._poke_refresh)
         self.invert.stateChanged.connect(self._poke_refresh)
         self.ts_col.valueChanged.connect(self._poke_refresh)
-        self.ts_col.valueChanged.connect(self._update_ts_title)
-        self.ts_col.valueChanged.connect(self._update_distance_axis_from_ui)
+        self.ts_col.valueChanged.connect(self._on_ts_col_changed)
         self.scale_down.valueChanged.connect(self._update_distance_axis_from_ui)
 
         self._wf_src_w = 0   # renderer.wf_width == point_count
         self._wf_src_h = 0   # renderer.wf_height
+        self._wf_scale_down = int(self.scale_down.value())
+        self._wf_view_start_col = 0
+        self._wf_view_col_count = 0
+        self._wf_zoom_factor = 1.25
+        self._wf_min_view_cols = 16
+        self._wf_drag_active = False
+        self._wf_drag_moved = False
+        self._wf_drag_start_x = 0.0
+        self._wf_drag_origin_start_col = 0
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
@@ -255,11 +264,131 @@ class MainWindow(QMainWindow):
         self._last_update_ts = 0.0
 
     def _update_distance_axis_from_ui(self, *args):
+        self._clamp_viewport()
         self.distance_axis.set_axis_state(
             point_count=int(self._wf_src_w or 0),
-            scale_down=int(self.scale_down.value()),
+            scale_down=int(self._wf_scale_down or self.scale_down.value()),
             selected_col=int(self.ts_col.value()),
+            view_start_col=int(self._wf_view_start_col),
+            view_point_count=int(self._effective_view_col_count()),
         )
+
+    def _on_ts_col_changed(self, *args):
+        self._ensure_selected_col_visible()
+        self._update_ts_title()
+        self._update_distance_axis_from_ui()
+
+    def _effective_view_col_count(self, point_count: int | None = None) -> int:
+        total_cols = int(self._wf_src_w if point_count is None else point_count)
+        if total_cols <= 0:
+            return 0
+
+        view_col_count = int(self._wf_view_col_count or total_cols)
+        return max(1, min(view_col_count, total_cols))
+
+    def _clamp_viewport(self, point_count: int | None = None):
+        total_cols = int(self._wf_src_w if point_count is None else point_count)
+        if total_cols <= 0:
+            self._wf_view_start_col = 0
+            self._wf_view_col_count = 0
+            return
+
+        view_col_count = self._effective_view_col_count(total_cols)
+        max_start = max(0, total_cols - view_col_count)
+        self._wf_view_start_col = max(0, min(int(self._wf_view_start_col), max_start))
+        self._wf_view_col_count = view_col_count
+
+    def _set_viewport(self, start_col: int, col_count: int, render: bool = True):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 0:
+            self._wf_view_start_col = 0
+            self._wf_view_col_count = 0
+            return
+
+        old_state = (int(self._wf_view_start_col), int(self._effective_view_col_count(total_cols)))
+        self._wf_view_start_col = int(start_col)
+        self._wf_view_col_count = int(col_count)
+        self._clamp_viewport(total_cols)
+        new_state = (int(self._wf_view_start_col), int(self._effective_view_col_count(total_cols)))
+
+        if render and new_state != old_state:
+            self._render_waterfall_view()
+
+    def _reset_viewport(self):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 0:
+            return
+        self._set_viewport(0, total_cols)
+
+    def _render_waterfall_view(self):
+        if self.renderer.wf is None or int(self._wf_src_w or 0) <= 0:
+            return
+
+        self._clamp_viewport()
+        self.renderer.render_to_label(
+            self.display,
+            start_col=int(self._wf_view_start_col),
+            col_count=int(self._effective_view_col_count()),
+        )
+        self._update_distance_axis_from_ui()
+        self._update_ts_title()
+
+    def _ensure_selected_col_visible(self):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 0:
+            return
+
+        self._clamp_viewport(total_cols)
+        view_col_count = self._effective_view_col_count(total_cols)
+        selected_col = min(max(0, int(self.ts_col.value())), total_cols - 1)
+
+        if selected_col < self._wf_view_start_col:
+            self._set_viewport(selected_col, view_col_count)
+        elif selected_col >= self._wf_view_start_col + view_col_count:
+            self._set_viewport(selected_col - view_col_count + 1, view_col_count)
+
+    def _clear_timeseries_cache(self):
+        self._ts_y.clear()
+        self._ts_t.clear()
+
+    def _zoom_waterfall(self, x_px: float, zoom_in: bool):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 1:
+            return
+
+        current_count = self._effective_view_col_count(total_cols)
+        min_view_cols = min(total_cols, self._wf_min_view_cols)
+        if zoom_in:
+            new_count = max(min_view_cols, int(round(current_count / self._wf_zoom_factor)))
+            if new_count == current_count and current_count > min_view_cols:
+                new_count = current_count - 1
+        else:
+            new_count = min(total_cols, int(round(current_count * self._wf_zoom_factor)))
+            if new_count == current_count and current_count < total_cols:
+                new_count = current_count + 1
+
+        if new_count == current_count:
+            return
+
+        display_width = max(1, int(self.display.width()))
+        anchor_ratio = min(max((float(x_px) + 0.5) / display_width, 0.0), 1.0)
+        anchor_col = self._x_to_col_exact(x_px)
+        new_start = int(round(anchor_col - anchor_ratio * new_count))
+        self._set_viewport(new_start, new_count)
+
+    def _pan_waterfall(self, delta_x: float):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 0:
+            return
+
+        view_col_count = self._effective_view_col_count(total_cols)
+        if view_col_count >= total_cols:
+            return
+
+        display_width = max(1, int(self.display.width()))
+        shift_cols = int(round(float(delta_x) * view_col_count / display_width))
+        new_start = int(self._wf_drag_origin_start_col) - shift_cols
+        self._set_viewport(new_start, view_col_count)
 
     def _current_column_distance_text(self, point_count: int, scale_down: int) -> str:
         if point_count <= 0:
@@ -345,6 +474,10 @@ class MainWindow(QMainWindow):
         if dst_w <= 1:
             return 0
 
+        self._clamp_viewport(src_w)
+        view_start_col = int(self._wf_view_start_col)
+        view_col_count = int(self._effective_view_col_count(src_w))
+
         # Clamp click into [0, dst_w)
         x = float(x_px)
         if x < 0.0:
@@ -353,39 +486,67 @@ class MainWindow(QMainWindow):
             x = float(dst_w - 1)
 
         # Pixel-center mapping:
-        # dst pixel center at (x + 0.5) maps to source coordinate in [0, src_w)
-        # u = (x+0.5)/dst_w * src_w
+        # dst pixel center at (x + 0.5) maps to the current visible viewport.
+        # u = (x+0.5)/dst_w * visible_cols
         # src index = floor(u)
-        u = (x + 0.5) * src_w / dst_w
-        col = int(u)  # floor
+        u = (x + 0.5) * view_col_count / dst_w
+        col = view_start_col + int(u)  # floor
 
-        if col < 0:
-            col = 0
-        if col > src_w - 1:
-            col = src_w - 1
+        col = max(view_start_col, min(col, view_start_col + view_col_count - 1))
         return col
 
 
     def eventFilter(self, obj, event):
-        # Click waterfall to select column
-        if obj is self.display and event.type() == QEvent.MouseButtonPress:
+        if obj is self.display:
             try:
-                # Qt6: QMouseEvent.position() -> QPointF
-                pos = event.position()
-                col = self._x_to_col_exact(pos.x())
+                if event.type() == QEvent.Resize:
+                    self._render_waterfall_view()
+                    return False
 
-                # update spinbox (this will also poke refresh via valueChanged)
-                self.ts_col.setValue(col)
+                if event.type() == QEvent.Wheel:
+                    delta_y = event.angleDelta().y()
+                    if delta_y != 0:
+                        self._zoom_waterfall(event.position().x(), zoom_in=delta_y > 0)
+                    return True
 
-                self._ts_y.clear()
-                self._ts_t.clear()
-                self._update_distance_axis_from_ui()
+                if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                    self._wf_drag_active = False
+                    self._wf_drag_moved = False
+                    self.display.setCursor(Qt.OpenHandCursor)
+                    self._reset_viewport()
+                    return True
 
-            # optional: show quick feedback
-            # self.status.setText(f"Clicked x={pos.x():.1f} -> col={col}")
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self._wf_drag_active = True
+                    self._wf_drag_moved = False
+                    self._wf_drag_start_x = float(event.position().x())
+                    self._wf_drag_origin_start_col = int(self._wf_view_start_col)
+                    self.display.setCursor(Qt.ClosedHandCursor)
+                    return True
+
+                if event.type() == QEvent.MouseMove and self._wf_drag_active:
+                    delta_x = float(event.position().x()) - self._wf_drag_start_x
+                    if abs(delta_x) >= 3.0:
+                        self._wf_drag_moved = True
+                    if self._wf_drag_moved:
+                        self._pan_waterfall(delta_x)
+                    return True
+
+                if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    was_drag_active = self._wf_drag_active
+                    was_drag_moved = self._wf_drag_moved
+                    self._wf_drag_active = False
+                    self._wf_drag_moved = False
+                    self.display.setCursor(Qt.OpenHandCursor)
+
+                    if was_drag_active and not was_drag_moved:
+                        col = self._x_to_col_exact(event.position().x())
+                        self.ts_col.setValue(col)
+                        self._clear_timeseries_cache()
+                        self._update_distance_axis_from_ui()
+                    return was_drag_active
             except Exception:
                 pass
-            return True  # consume
         return super().eventFilter(obj, event)
 
     def _parse_scan_rate_hz(self, scan_rate_label: str) -> float:
@@ -489,21 +650,23 @@ class MainWindow(QMainWindow):
             self._update_timeseries_from_block(block, cfg_scan, point_count)
             self._sync_transform_params()
 
+            prev_point_count = int(self._wf_src_w or 0)
+            was_full_view = prev_point_count <= 0 or self._effective_view_col_count(prev_point_count) >= prev_point_count
             self.renderer.ensure(point_count)
             if self.renderer.wf is None:
                 return
             
             self._wf_src_w = int(self.renderer.wf_width or point_count or 0)
             self._wf_src_h = int(self.renderer.wf_height or 0)
-            self.distance_axis.set_axis_state(
-                point_count=point_count,
-                scale_down=sd,
-                selected_col=int(self.ts_col.value()),
-            )
+            self._wf_scale_down = int(sd)
+            if was_full_view:
+                self._wf_view_start_col = 0
+                self._wf_view_col_count = point_count
+            self._clamp_viewport(point_count)
 
             gray_block = self.transform.apply(block)
             self.renderer.push_block(gray_block)
-            self.renderer.render_to_label(self.display)
+            self._render_waterfall_view()
 
             self.status.setText(
                 f"Status: Running (show=ch{sel_ch}/{sel_kind}, tf=Energy(MSE dB), "
@@ -519,7 +682,7 @@ class MainWindow(QMainWindow):
 
     def _update_ts_title(self):
         self._ts_chart.setTitle(
-            f"Time Series @ {self._current_column_distance_label(self._wf_src_w, self.scale_down.value())}"
+            f"Time Series @ {self._current_column_distance_label(self._wf_src_w, self._wf_scale_down)}"
         )
 
     def closeEvent(self, event):

@@ -77,12 +77,22 @@ class WaterfallRenderer:
     # -----------------------------
     # Render
     # -----------------------------
-    def render_to_label(self, label: QLabel):
+    def render_to_label(self, label: QLabel, start_col: int = 0, col_count: int | None = None):
         if self.wf is None:
             return
 
+        total_cols = int(self.wf_width or 0)
+        if total_cols <= 0:
+            return
+
+        start_col = max(0, min(int(start_col), total_cols - 1))
+        if col_count is None:
+            col_count = total_cols
+        col_count = max(1, min(int(col_count), total_cols - start_col))
+        gray_view = self.wf[:, start_col:start_col + col_count]
+
         # Apply colormap
-        rgb_img = self._colormap_blue_orange_red(self.wf)
+        rgb_img = self._colormap_blue_orange_red(gray_view)
 
         h, w, _ = rgb_img.shape
         img = np.ascontiguousarray(rgb_img)
