@@ -1,7 +1,7 @@
 import time
 import numpy as np
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QTimer, QEvent, QSettings
 from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
@@ -24,6 +24,8 @@ from ..viz.waterfall_renderer import WaterfallRenderer
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._settings = QSettings("Enlitech", "JMV-DAS")
+        self._pending_ts_col: int | None = None
 
         # ---- Transform/Renderer ----
         self.transform = WaterfallTransform()
@@ -363,7 +365,181 @@ class MainWindow(QMainWindow):
         self._update_ts_title()
         self._update_distance_axis_from_ui()
         self._refresh_switch_ports()
+        self._load_settings()
         self._update_fibre_break_status()
+
+    @staticmethod
+    def _settings_bool(value, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _settings_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _settings_float(value, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _set_combo_text(combo: QComboBox, value: str):
+        text = (value or "").strip()
+        if not text:
+            return
+        idx = combo.findText(text)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setCurrentText(text)
+
+    def _save_settings(self):
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("acquisition/scan_rate", self.scan_rate.currentText())
+        self._settings.setValue("acquisition/mode", self.mode.currentText())
+        self._settings.setValue("acquisition/pulse_width", self.pulse_width.value())
+        self._settings.setValue("acquisition/scale_down", self.scale_down.value())
+
+        self._settings.setValue("switch/port", self.switch_port.currentText())
+        self._settings.setValue("switch/ch1", self.switch_ch1.currentText())
+        self._settings.setValue("switch/ch2", self.switch_ch2.currentText())
+
+        self._settings.setValue("fibre_break/monitor_channel", self.break_monitor_channel.currentText())
+        self._settings.setValue("fibre_break/alpha", self.break_alpha.value())
+        self._settings.setValue("fibre_break/threshold", self.break_threshold.value())
+        self._settings.setValue("fibre_break/min_length", self.break_min_length.value())
+        self._settings.setValue("fibre_break/enable_alarm", self.break_enable_alarm.isChecked())
+        self._settings.setValue("fibre_break/enable_autoswitch", self.break_enable_autoswitch.isChecked())
+        self._settings.setValue("fibre_break/normal_ch1", self.break_normal_ch1.currentText())
+        self._settings.setValue("fibre_break/normal_ch2", self.break_normal_ch2.currentText())
+        self._settings.setValue("fibre_break/alarm_ch1", self.break_alarm_ch1.currentText())
+        self._settings.setValue("fibre_break/alarm_ch2", self.break_alarm_ch2.currentText())
+
+        self._settings.setValue("waterfall/channel", self.wf_channel.currentText())
+        self._settings.setValue("waterfall/kind", self.wf_kind.currentText())
+        self._settings.setValue("waterfall/ts_col", self.ts_col.value())
+
+        self._settings.setValue("transform/energy_win", self.energy_win.value())
+        self._settings.setValue("transform/db_vmin", self.db_vmin.value())
+        self._settings.setValue("transform/db_vmax", self.db_vmax.value())
+        self._settings.setValue("transform/gamma", self.gamma.value())
+        self._settings.setValue("transform/eps", self.eps.value())
+        self._settings.setValue("transform/invert", self.invert.isChecked())
+        self._settings.sync()
+
+    def _load_settings(self):
+        geometry = self._settings.value("window/geometry")
+        if geometry is not None:
+            try:
+                self.restoreGeometry(geometry)
+            except Exception:
+                pass
+
+        self._set_combo_text(
+            self.scan_rate,
+            str(self._settings.value("acquisition/scan_rate", self.scan_rate.currentText())),
+        )
+        self._set_combo_text(
+            self.mode,
+            str(self._settings.value("acquisition/mode", self.mode.currentText())),
+        )
+        self.pulse_width.setValue(
+            self._settings_int(self._settings.value("acquisition/pulse_width"), self.pulse_width.value())
+        )
+        self.scale_down.setValue(
+            self._settings_int(self._settings.value("acquisition/scale_down"), self.scale_down.value())
+        )
+
+        self._set_combo_text(
+            self.switch_port,
+            str(self._settings.value("switch/port", self.switch_port.currentText())),
+        )
+        self._set_combo_text(
+            self.switch_ch1,
+            str(self._settings.value("switch/ch1", self.switch_ch1.currentText())),
+        )
+        self._set_combo_text(
+            self.switch_ch2,
+            str(self._settings.value("switch/ch2", self.switch_ch2.currentText())),
+        )
+
+        self._set_combo_text(
+            self.break_monitor_channel,
+            str(self._settings.value("fibre_break/monitor_channel", self.break_monitor_channel.currentText())),
+        )
+        self.break_alpha.setValue(
+            self._settings_float(self._settings.value("fibre_break/alpha"), self.break_alpha.value())
+        )
+        self.break_threshold.setValue(
+            self._settings_float(self._settings.value("fibre_break/threshold"), self.break_threshold.value())
+        )
+        self.break_min_length.setValue(
+            self._settings_float(self._settings.value("fibre_break/min_length"), self.break_min_length.value())
+        )
+        self.break_enable_alarm.setChecked(
+            self._settings_bool(self._settings.value("fibre_break/enable_alarm"), self.break_enable_alarm.isChecked())
+        )
+        self.break_enable_autoswitch.setChecked(
+            self._settings_bool(
+                self._settings.value("fibre_break/enable_autoswitch"),
+                self.break_enable_autoswitch.isChecked(),
+            )
+        )
+        self._set_combo_text(
+            self.break_normal_ch1,
+            str(self._settings.value("fibre_break/normal_ch1", self.break_normal_ch1.currentText())),
+        )
+        self._set_combo_text(
+            self.break_normal_ch2,
+            str(self._settings.value("fibre_break/normal_ch2", self.break_normal_ch2.currentText())),
+        )
+        self._set_combo_text(
+            self.break_alarm_ch1,
+            str(self._settings.value("fibre_break/alarm_ch1", self.break_alarm_ch1.currentText())),
+        )
+        self._set_combo_text(
+            self.break_alarm_ch2,
+            str(self._settings.value("fibre_break/alarm_ch2", self.break_alarm_ch2.currentText())),
+        )
+
+        self._set_combo_text(
+            self.wf_channel,
+            str(self._settings.value("waterfall/channel", self.wf_channel.currentText())),
+        )
+        self._set_combo_text(
+            self.wf_kind,
+            str(self._settings.value("waterfall/kind", self.wf_kind.currentText())),
+        )
+        self._pending_ts_col = self._settings_int(self._settings.value("waterfall/ts_col"), self.ts_col.value())
+
+        self.energy_win.setValue(
+            self._settings_int(self._settings.value("transform/energy_win"), self.energy_win.value())
+        )
+        self.db_vmin.setValue(
+            self._settings_float(self._settings.value("transform/db_vmin"), self.db_vmin.value())
+        )
+        self.db_vmax.setValue(
+            self._settings_float(self._settings.value("transform/db_vmax"), self.db_vmax.value())
+        )
+        self.gamma.setValue(
+            self._settings_float(self._settings.value("transform/gamma"), self.gamma.value())
+        )
+        self.eps.setValue(
+            self._settings_float(self._settings.value("transform/eps"), self.eps.value())
+        )
+        self.invert.setChecked(
+            self._settings_bool(self._settings.value("transform/invert"), self.invert.isChecked())
+        )
+
+        self._reset_fibre_break_detector()
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -930,6 +1106,11 @@ class MainWindow(QMainWindow):
             self._ts_last_point_count = point_count
             self.ts_col.blockSignals(True)
             self.ts_col.setRange(0, max(0, point_count - 1))
+            if self._pending_ts_col is not None:
+                restored_col = min(max(0, int(self._pending_ts_col)), max(0, point_count - 1))
+                self.ts_col.setValue(restored_col)
+                col = restored_col
+                self._pending_ts_col = None
             self.ts_col.blockSignals(False)
             col = min(col, max(0, point_count - 1))
 
@@ -1047,6 +1228,10 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        try:
+            self._save_settings()
+        except Exception:
+            pass
         try:
             self.worker.stop()
         except Exception:
