@@ -14,6 +14,7 @@ from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtGui import QPainter
 
 from backend.acquisition import AcquisitionWorker
+from backend.optical_switch import Gezhi12SwitchController
 from .distance_axis import DistanceAxis
 from ..transformers.waterfall_transform import WaterfallTransform
 from ..viz.waterfall_renderer import WaterfallRenderer
@@ -58,6 +59,20 @@ class MainWindow(QMainWindow):
         self.scale_down = QSpinBox()
         self.scale_down.setRange(1, 10)
         self.scale_down.setValue(10)
+
+        # Optical switch controls
+        self.switch_port = QComboBox()
+        self.switch_port.setEditable(True)
+        self.btn_switch_refresh = QPushButton("Refresh Ports")
+        self.btn_switch_connect = QPushButton("Connect Switch")
+        self.btn_switch_disconnect = QPushButton("Disconnect Switch")
+        self.switch_ch1 = QComboBox()
+        self.switch_ch1.addItems(["OFF", "ON"])
+        self.switch_ch2 = QComboBox()
+        self.switch_ch2.addItems(["OFF", "ON"])
+        self.btn_switch_apply = QPushButton("Apply Switch State")
+        self.switch_status = QLabel("Switch: Disconnected")
+        self.switch_status.setWordWrap(True)
 
         # Stream selection
         self.wf_channel = QComboBox()
@@ -118,6 +133,21 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.pulse_width)
         control_layout.addWidget(QLabel("Scale Down"))
         control_layout.addWidget(self.scale_down)
+
+        control_layout.addSpacing(12)
+        control_layout.addWidget(QLabel("Optical Switch Port"))
+        control_layout.addWidget(self.switch_port)
+        switch_port_buttons = QHBoxLayout()
+        switch_port_buttons.addWidget(self.btn_switch_refresh)
+        switch_port_buttons.addWidget(self.btn_switch_connect)
+        control_layout.addLayout(switch_port_buttons)
+        control_layout.addWidget(self.btn_switch_disconnect)
+        control_layout.addWidget(QLabel("Optical Switch CH1"))
+        control_layout.addWidget(self.switch_ch1)
+        control_layout.addWidget(QLabel("Optical Switch CH2"))
+        control_layout.addWidget(self.switch_ch2)
+        control_layout.addWidget(self.btn_switch_apply)
+        control_layout.addWidget(self.switch_status)
 
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Waterfall Channel"))
@@ -211,10 +241,15 @@ class MainWindow(QMainWindow):
 
         # ---- Worker ----
         self.worker = AcquisitionWorker()
+        self.switch_controller = Gezhi12SwitchController()
         self.worker.data_ready.connect(self.on_data_ready)
 
         self.btn_start.clicked.connect(self.on_start_clicked)
         self.btn_stop.clicked.connect(self.on_stop_clicked)
+        self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
+        self.btn_switch_connect.clicked.connect(self.on_switch_connect_clicked)
+        self.btn_switch_disconnect.clicked.connect(self.on_switch_disconnect_clicked)
+        self.btn_switch_apply.clicked.connect(self.on_switch_apply_clicked)
 
         # ---- Data cache ----
         self._latest_by_stream = {}  # (ch, kind) -> payload
@@ -262,6 +297,7 @@ class MainWindow(QMainWindow):
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
+        self._refresh_switch_ports()
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
@@ -455,6 +491,48 @@ class MainWindow(QMainWindow):
             self.status.setText("Status: Stopped")
         except Exception as e:
             self.status.setText(f"Status: Stop failed: {e}")
+
+    def _refresh_switch_ports(self):
+        current_text = (self.switch_port.currentText() or "").strip()
+        ports = self.switch_controller.available_ports()
+
+        self.switch_port.blockSignals(True)
+        self.switch_port.clear()
+        self.switch_port.addItems(ports)
+        self.switch_port.blockSignals(False)
+
+        if current_text:
+            self.switch_port.setCurrentText(current_text)
+        elif ports:
+            self.switch_port.setCurrentText(ports[0])
+        else:
+            self.switch_port.setCurrentText("/dev/ttyUSB0")
+
+    def on_switch_connect_clicked(self):
+        try:
+            port_name = (self.switch_port.currentText() or "").strip()
+            self.switch_controller.open(port_name)
+            self.switch_status.setText(f"Switch: Connected @ {self.switch_controller.port_name}")
+        except Exception as e:
+            self.switch_status.setText(f"Switch: Connect failed: {e}")
+
+    def on_switch_disconnect_clicked(self):
+        try:
+            self.switch_controller.close()
+            self.switch_status.setText("Switch: Disconnected")
+        except Exception as e:
+            self.switch_status.setText(f"Switch: Disconnect failed: {e}")
+
+    def on_switch_apply_clicked(self):
+        try:
+            ch1_on = self.switch_ch1.currentText() == "ON"
+            ch2_on = self.switch_ch2.currentText() == "ON"
+            self.switch_controller.set_channels(ch1_on, ch2_on)
+            self.switch_status.setText(
+                f"Switch: Applied CH1={'ON' if ch1_on else 'OFF'}, CH2={'ON' if ch2_on else 'OFF'}"
+            )
+        except Exception as e:
+            self.switch_status.setText(f"Switch: Apply failed: {e}")
 
     def on_data_ready(self, payload: dict):
         try:
@@ -802,6 +880,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         try:
             self.worker.stop()
+        except Exception:
+            pass
+        try:
+            self.switch_controller.close()
         except Exception:
             pass
         event.accept()
