@@ -122,8 +122,8 @@ class MainWindow(QMainWindow):
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Waterfall Channel"))
         control_layout.addWidget(self.wf_channel)
-        # control_layout.addWidget(QLabel("Waterfall Kind"))
-        # control_layout.addWidget(self.wf_kind)
+        control_layout.addWidget(QLabel("Waterfall Kind"))
+        control_layout.addWidget(self.wf_kind)
         control_layout.addWidget(QLabel("Time Series Column (pos idx)"))
         control_layout.addWidget(self.ts_col)
 
@@ -233,8 +233,8 @@ class MainWindow(QMainWindow):
         self._timer.start()
 
         # When selection/params change, allow next tick immediately
-        self.wf_channel.currentIndexChanged.connect(self._poke_refresh)
-        self.wf_kind.currentIndexChanged.connect(self._poke_refresh)
+        self.wf_channel.currentIndexChanged.connect(self._on_stream_selection_changed)
+        self.wf_kind.currentIndexChanged.connect(self._on_stream_selection_changed)
         self.energy_win.valueChanged.connect(self._poke_refresh)
         self.db_vmin.valueChanged.connect(self._poke_refresh)
         self.db_vmax.valueChanged.connect(self._poke_refresh)
@@ -262,6 +262,29 @@ class MainWindow(QMainWindow):
 
     def _poke_refresh(self, *args):
         self._last_update_ts = 0.0
+
+    def _selected_stream(self) -> tuple[int, str]:
+        try:
+            sel_ch = int(self.wf_channel.currentText())
+        except Exception:
+            sel_ch = 1
+        sel_kind = self.wf_kind.currentText() or "phase"
+        return sel_ch, sel_kind
+
+    def _clear_selected_stream_view(self):
+        self._clear_timeseries_cache()
+        self._ts_last_t = 0.0
+        self._ts_series.clear()
+        self.renderer.clear()
+        self.display.clear()
+        self.display.setText("Waiting for selected stream...")
+        self._last_update_ts = 0.0
+        self._update_ts_title()
+
+    def _on_stream_selection_changed(self, *args):
+        self._clear_selected_stream_view()
+        sel_ch, sel_kind = self._selected_stream()
+        self.status.setText(f"Status: Waiting for ch{sel_ch}/{sel_kind} data")
 
     def _update_distance_axis_from_ui(self, *args):
         self._clamp_viewport()
@@ -437,11 +460,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _pull_selected_payload(self):
-        try:
-            sel_ch = int(self.wf_channel.currentText())
-        except Exception:
-            sel_ch = 1
-        sel_kind = self.wf_kind.currentText() or "phase"
+        sel_ch, sel_kind = self._selected_stream()
         key = (sel_ch, sel_kind)
         payload = self._latest_by_stream.get(key)
         if payload is None:
@@ -681,8 +700,10 @@ class MainWindow(QMainWindow):
             self.status.setText(f"Status: Render error: {e}")
 
     def _update_ts_title(self):
+        sel_ch, sel_kind = self._selected_stream()
         self._ts_chart.setTitle(
-            f"Time Series @ {self._current_column_distance_label(self._wf_src_w, self._wf_scale_down)}"
+            f"Time Series ch{sel_ch}/{sel_kind} @ "
+            f"{self._current_column_distance_label(self._wf_src_w, self._wf_scale_down)}"
         )
 
     def closeEvent(self, event):

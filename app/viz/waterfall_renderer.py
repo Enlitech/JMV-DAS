@@ -10,6 +10,10 @@ class WaterfallRenderer:
         self.wf_width = None
         self.wf = None  # uint8[H,W] grayscale
 
+    def clear(self):
+        if self.wf is not None:
+            self.wf.fill(0)
+
     def ensure(self, width: int):
         width = int(width)
         if width <= 0:
