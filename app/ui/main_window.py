@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         # Acquisition params
         self.scan_rate = QComboBox()
         self.scan_rate.addItems(["1k", "2k", "4k", "10k"])
+        self.scan_rate.setCurrentText("10k")
 
         self.mode = QComboBox()
         self.mode.addItems([
@@ -99,7 +100,7 @@ class MainWindow(QMainWindow):
         self.eps.setValue(1e-6)
 
         self.invert = QCheckBox("Invert (background bright)")
-        self.invert.setChecked(True)
+        self.invert.setChecked(False)
 
         # Buttons
         self.btn_start = QPushButton("Start")
