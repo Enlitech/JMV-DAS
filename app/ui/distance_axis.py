@@ -94,9 +94,20 @@ class DistanceAxis(QWidget):
             return
 
         max_distance = self.max_distance_m()
-        tick_step = self._nice_step(max_distance / 5.0) if max_distance > 0 else 1.0
+        target_major_intervals = max(6, min(10, span_px // 120))
+        tick_step = self._nice_step(max_distance / target_major_intervals) if max_distance > 0 else 1.0
+        minor_step = tick_step / 2.0
+
+        if minor_step > 0 and max_distance > 0:
+            painter.setPen(QPen(QColor("#707070"), 1))
+            tick = minor_step
+            while tick < max_distance:
+                x = x0 + int(round((tick / max_distance) * span_px))
+                painter.drawLine(x, axis_y, x, axis_y + 3)
+                tick += tick_step
 
         tick = 0.0
+        painter.setPen(QPen(QColor("#404040"), 1))
         while tick <= max_distance + tick_step * 0.5:
             x = x0 + int(round((tick / max_distance) * span_px)) if max_distance > 0 else x0
             painter.drawLine(x, axis_y, x, axis_y + 6)
@@ -145,7 +156,7 @@ class DistanceAxis(QWidget):
         if value_m >= 1000.0:
             return f"{value_m / 1000.0:.1f} km"
         if value_m >= 100.0:
-            return f"{value_m:.0f}"
+            return f"{value_m:.0f} m"
         if value_m >= 10.0:
-            return f"{value_m:.1f}"
-        return f"{value_m:.2f}"
+            return f"{value_m:.1f} m"
+        return f"{value_m:.2f} m"
