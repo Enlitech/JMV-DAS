@@ -9,10 +9,16 @@ class WaterfallRenderer:
         self.wf_height = int(wf_height)
         self.wf_width = None
         self.wf = None  # uint8[H,W] grayscale
+        self.values = None  # float32[H,W] raw value buffer aligned with wf rows
+        self.row_times = None  # float64[H] wall-clock time per row
 
     def clear(self):
         if self.wf is not None:
             self.wf.fill(0)
+        if self.values is not None:
+            self.values.fill(np.nan)
+        if self.row_times is not None:
+            self.row_times.fill(np.nan)
 
     def ensure(self, width: int):
         width = int(width)
@@ -22,8 +28,15 @@ class WaterfallRenderer:
             return
         self.wf_width = width
         self.wf = np.zeros((self.wf_height, self.wf_width), dtype=np.uint8)
+        self.values = np.full((self.wf_height, self.wf_width), np.nan, dtype=np.float32)
+        self.row_times = np.full(self.wf_height, np.nan, dtype=np.float64)
 
-    def push_block(self, gray_block: np.ndarray):
+    def push_block(
+        self,
+        gray_block: np.ndarray,
+        raw_block: np.ndarray | None = None,
+        line_times: np.ndarray | None = None,
+    ):
         if self.wf is None:
             return
 
@@ -35,11 +48,45 @@ class WaterfallRenderer:
         if n <= 0:
             return
 
+        raw = None
+        if raw_block is not None:
+            raw = np.asarray(raw_block, dtype=np.float32)
+            if raw.shape != gray_block.shape:
+                raw = None
+
+        times = None
+        if line_times is not None:
+            times = np.asarray(line_times, dtype=np.float64).reshape(-1)
+            if times.size != n:
+                times = None
+
         if n >= self.wf_height:
             self.wf[:, :] = gray_block[-self.wf_height:, :]
+            if self.values is not None:
+                if raw is not None:
+                    self.values[:, :] = raw[-self.wf_height:, :]
+                else:
+                    self.values.fill(np.nan)
+            if self.row_times is not None:
+                if times is not None:
+                    self.row_times[:] = times[-self.wf_height:]
+                else:
+                    self.row_times.fill(np.nan)
         else:
             self.wf[:-n, :] = self.wf[n:, :]
             self.wf[-n:, :] = gray_block
+            if self.values is not None:
+                self.values[:-n, :] = self.values[n:, :]
+                if raw is not None:
+                    self.values[-n:, :] = raw
+                else:
+                    self.values[-n:, :].fill(np.nan)
+            if self.row_times is not None:
+                self.row_times[:-n] = self.row_times[n:]
+                if times is not None:
+                    self.row_times[-n:] = times
+                else:
+                    self.row_times[-n:].fill(np.nan)
 
     # -----------------------------
     # Heatmap colormap

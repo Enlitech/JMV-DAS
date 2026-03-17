@@ -192,6 +192,9 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.ts_view, 0)
         right_layout.addWidget(self.display, 1)
         right_layout.addWidget(self.distance_axis, 0)
+        self.hover_info = QLabel("Hover waterfall to inspect point")
+        self.hover_info.setWordWrap(True)
+        right_layout.addWidget(self.hover_info, 0)
 
         # ---- Put controls into a scroll area ----
         control_widget = QWidget()
@@ -278,6 +281,8 @@ class MainWindow(QMainWindow):
         self.renderer.clear()
         self.display.clear()
         self.display.setText("Waiting for selected stream...")
+        self.display.setToolTip("")
+        self.hover_info.setText("Hover waterfall to inspect point")
         self._last_update_ts = 0.0
         self._update_ts_title()
 
@@ -514,6 +519,84 @@ class MainWindow(QMainWindow):
         col = max(view_start_col, min(col, view_start_col + view_col_count - 1))
         return col
 
+    def _y_to_row_exact(self, y_px: float) -> int:
+        src_h = int(self._wf_src_h or 0)
+        if src_h <= 1:
+            return 0
+
+        dst_h = int(self.display.height())
+        if dst_h <= 1:
+            return 0
+
+        y = float(y_px)
+        if y < 0.0:
+            y = 0.0
+        if y > (dst_h - 1):
+            y = float(dst_h - 1)
+
+        u = (y + 0.5) * src_h / dst_h
+        row = int(u)
+        return max(0, min(row, src_h - 1))
+
+    @staticmethod
+    def _format_time_of_day(epoch_s: float) -> str:
+        if not np.isfinite(epoch_s):
+            return "n/a"
+        whole = int(epoch_s)
+        ms = int(round((epoch_s - whole) * 1000.0))
+        if ms >= 1000:
+            whole += 1
+            ms = 0
+        return f"{time.strftime('%H:%M:%S', time.localtime(whole))}.{ms:03d}"
+
+    def _format_hover_value(self, value: float, kind: str) -> str:
+        if not np.isfinite(value):
+            return f"{kind}=n/a"
+        if kind == "phase":
+            return f"phase={value:.2f} deg"
+        return f"amp={value:.4f}"
+
+    def _set_hover_info(self, text: str):
+        self.hover_info.setText(text)
+        self.display.setToolTip(text)
+
+    def _update_hover_info(self, x_px: float, y_px: float):
+        if self.renderer.wf is None or self.renderer.values is None or self.renderer.row_times is None:
+            self._set_hover_info("Hover waterfall to inspect point")
+            return
+
+        total_cols = int(self._wf_src_w or 0)
+        total_rows = int(self._wf_src_h or 0)
+        if total_cols <= 0 or total_rows <= 0:
+            self._set_hover_info("Hover waterfall to inspect point")
+            return
+
+        col = self._x_to_col_exact(x_px)
+        row = self._y_to_row_exact(y_px)
+        if row < 0 or row >= self.renderer.values.shape[0] or col < 0 or col >= self.renderer.values.shape[1]:
+            self._set_hover_info("Hover waterfall to inspect point")
+            return
+
+        sel_ch, sel_kind = self._selected_stream()
+        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(self._wf_scale_down))
+        value = float(self.renderer.values[row, col])
+        row_time = float(self.renderer.row_times[row])
+
+        delta_text = ""
+        latest_time = float(self.renderer.row_times[-1]) if self.renderer.row_times.size > 0 else np.nan
+        if np.isfinite(row_time) and np.isfinite(latest_time):
+            age_s = max(0.0, latest_time - row_time)
+            delta_text = f", age={age_s:.3f}s"
+
+        text = (
+            f"Hover ch{sel_ch}/{sel_kind}: "
+            f"dist={self.distance_axis._format_distance(distance_m)}, "
+            f"time={self._format_time_of_day(row_time)}{delta_text}, "
+            f"{self._format_hover_value(value, sel_kind)}, "
+            f"row={row}, col={col}"
+        )
+        self._set_hover_info(text)
+
 
     def eventFilter(self, obj, event):
         if obj is self.display:
@@ -551,6 +634,10 @@ class MainWindow(QMainWindow):
                         self._pan_waterfall(delta_x)
                     return True
 
+                if event.type() == QEvent.MouseMove:
+                    self._update_hover_info(event.position().x(), event.position().y())
+                    return False
+
                 if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
                     was_drag_active = self._wf_drag_active
                     was_drag_moved = self._wf_drag_moved
@@ -564,6 +651,10 @@ class MainWindow(QMainWindow):
                         self._clear_timeseries_cache()
                         self._update_distance_axis_from_ui()
                     return was_drag_active
+
+                if event.type() == QEvent.Leave:
+                    self._set_hover_info("Hover waterfall to inspect point")
+                    return False
             except Exception:
                 pass
         return super().eventFilter(obj, event)
@@ -684,7 +775,9 @@ class MainWindow(QMainWindow):
             self._clamp_viewport(point_count)
 
             gray_block = self.transform.apply(block)
-            self.renderer.push_block(gray_block)
+            block_end_ts = float(payload.get("ts", time.time()))
+            line_times = block_end_ts - self._ts_dt * np.arange(num_lines - 1, -1, -1, dtype=np.float64)
+            self.renderer.push_block(gray_block, raw_block=block, line_times=line_times)
             self._render_waterfall_view()
 
             self.status.setText(
