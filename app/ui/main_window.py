@@ -1,3 +1,4 @@
+import threading
 import time
 import numpy as np
 
@@ -14,7 +15,9 @@ from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtGui import QPainter
 
 from backend.acquisition import AcquisitionWorker
+from backend.compat_http_api import CompatHttpApiServer
 from backend.fibre_break_detector import FibreBreakDetector, FibreBreakResult
+from backend.machine_id import get_machine_id
 from backend.optical_switch import Gezhi12SwitchController
 from .distance_axis import DistanceAxis
 from ..transformers.waterfall_transform import WaterfallTransform
@@ -26,13 +29,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = QSettings("Enlitech", "JMV-DAS")
         self._pending_ts_col: int | None = None
+        self.machine_id = get_machine_id()
 
         # ---- Transform/Renderer ----
         self.transform = WaterfallTransform()
         self.transform.mode = "Energy (MSE dB)"  # default & only mode used
         self.renderer = WaterfallRenderer(wf_height=600)
 
-        self.setWindowTitle("JMV-DAS Infrastructure Secure")
+        self.setWindowTitle(f"JMV-DAS Infrastructure Secure [{self.machine_id}]")
         self.resize(1100, 700)
 
         central = QWidget()
@@ -159,6 +163,8 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
 
+        self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
+        self.machine_id_label.setWordWrap(True)
         self.status = QLabel("Status: Idle")
         self.status.setWordWrap(True)
 
@@ -232,6 +238,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.btn_stop)
 
         control_layout.addSpacing(16)
+        control_layout.addWidget(self.machine_id_label)
         control_layout.addWidget(self.status)
       
         # ---- Right panel: time-series (top) + waterfall (bottom) ----
@@ -299,8 +306,12 @@ class MainWindow(QMainWindow):
 
         # ---- Worker ----
         self.worker = AcquisitionWorker()
-        self.fibre_break_detector = FibreBreakDetector()
+        self.fibre_break_detectors = {
+            1: FibreBreakDetector(),
+            2: FibreBreakDetector(),
+        }
         self.switch_controller = Gezhi12SwitchController()
+        self.compat_api = CompatHttpApiServer()
         self.worker.data_ready.connect(self.on_data_ready)
 
         self.btn_start.clicked.connect(self.on_start_clicked)
@@ -363,17 +374,32 @@ class MainWindow(QMainWindow):
         self._wf_drag_moved = False
         self._wf_drag_start_x = 0.0
         self._wf_drag_origin_start_col = 0
-        self._fibre_break_result: FibreBreakResult | None = None
         self._fibre_break_last_abnormal: bool | None = None
-        self._fibre_health = {
-            "main": None,
-            "standby": None,
+        self._fibre_break_result_by_channel: dict[int, FibreBreakResult | None] = {
+            1: None,
+            2: None,
+        }
+        self._fibre_health_by_channel = {
+            1: {"main": None, "standby": None},
+            2: {"main": None, "standby": None},
+        }
+        self._fibre_last_result_by_channel = {
+            1: {"main": None, "standby": None},
+            2: {"main": None, "standby": None},
         }
         self._break_peek_state = "idle"
         self._break_peek_target_fibre = "main"
         self._break_peek_return_fibre = "main"
         self._break_peek_ready_ts = 0.0
         self._break_peek_counter = 0
+        self._api_snapshot_lock = threading.Lock()
+        self._api_snapshot = {
+            "machine_id": self.machine_id,
+            "channel_count": 2,
+            "alerts": [],
+            "alert_status_by_name": {},
+            "fibre_health": [],
+        }
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
@@ -381,6 +407,10 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._sync_switch_state_from_ui()
         self._update_fibre_break_status()
+        self._update_api_snapshot()
+        self.compat_api.set_snapshot(self._get_api_snapshot())
+        if not self.compat_api.start():
+            self.status.setText(f"Status: API listen failed on :{self.compat_api.port}: {self.compat_api.last_error}")
 
     @staticmethod
     def _settings_bool(value, default: bool = False) -> bool:
@@ -602,6 +632,25 @@ class MainWindow(QMainWindow):
         except Exception:
             return 1
 
+    def _detector_for_channel(self, channel: int) -> FibreBreakDetector:
+        ch = 1 if int(channel) == 1 else 2
+        return self.fibre_break_detectors[ch]
+
+    def _channel_health_map(self, channel: int) -> dict[str, bool | None]:
+        ch = 1 if int(channel) == 1 else 2
+        return self._fibre_health_by_channel[ch]
+
+    def _channel_result_map(self, channel: int) -> dict[str, FibreBreakResult | None]:
+        ch = 1 if int(channel) == 1 else 2
+        return self._fibre_last_result_by_channel[ch]
+
+    @staticmethod
+    def _channel_name_for_api(channel: int) -> str:
+        return f"ch{int(channel)}"
+
+    def _alert_name_for_channel(self, channel: int) -> str:
+        return f"fibre_break_{self._channel_name_for_api(channel)}"
+
     @staticmethod
     def _other_fibre_name(fibre_name: str) -> str:
         return "standby" if Gezhi12SwitchController.normalize_fibre_name(fibre_name) == "main" else "main"
@@ -610,13 +659,15 @@ class MainWindow(QMainWindow):
         self.switch_controller.set_assumed_fibre(1, self._combo_fibre_name(self.switch_ch1))
         self.switch_controller.set_assumed_fibre(2, self._combo_fibre_name(self.switch_ch2))
         self._refresh_switch_status()
+        self._update_api_snapshot()
 
     def _sync_fibre_break_detector_config(self):
-        self.fibre_break_detector.configure(
-            spatial_ewma_alpha=float(self.break_alpha.value()),
-            threshold=float(self.break_threshold.value()),
-            min_length_m=float(self.break_min_length.value()),
-        )
+        for detector in self.fibre_break_detectors.values():
+            detector.configure(
+                spatial_ewma_alpha=float(self.break_alpha.value()),
+                threshold=float(self.break_threshold.value()),
+                min_length_m=float(self.break_min_length.value()),
+            )
 
     def _cancel_break_peek(self, reset_counter: bool = False):
         self._break_peek_state = "idle"
@@ -626,12 +677,20 @@ class MainWindow(QMainWindow):
 
     def _reset_fibre_break_detector(self, *args):
         self._sync_fibre_break_detector_config()
-        self.fibre_break_detector.reset()
-        self._fibre_break_result = None
+        for detector in self.fibre_break_detectors.values():
+            detector.reset()
+        self._fibre_break_result_by_channel = {
+            1: None,
+            2: None,
+        }
         self._fibre_break_last_abnormal = None
-        self._fibre_health = {
-            "main": None,
-            "standby": None,
+        self._fibre_health_by_channel = {
+            1: {"main": None, "standby": None},
+            2: {"main": None, "standby": None},
+        }
+        self._fibre_last_result_by_channel = {
+            1: {"main": None, "standby": None},
+            2: {"main": None, "standby": None},
         }
         self._cancel_break_peek(reset_counter=True)
         self._update_fibre_break_status()
@@ -657,29 +716,31 @@ class MainWindow(QMainWindow):
         active_fibre = self._current_monitor_fibre()
         other_fibre = self._other_fibre_name(active_fibre)
         default_fibre = self._combo_fibre_name(self.break_default_fibre)
+        health_map = self._channel_health_map(monitor_ch)
+        result = self._fibre_break_result_by_channel.get(monitor_ch)
         peeking_text = "idle"
         if self._break_peek_state == "waiting_other":
             peeking_text = f"peeking {self._display_fibre_name(self._break_peek_target_fibre)}"
         elif self._break_peek_state == "waiting_restore":
             peeking_text = f"returning to {self._display_fibre_name(self._break_peek_return_fibre)}"
 
-        if self._fibre_break_result is None:
+        if result is None:
             self.break_status.setText(
                 f"Fibre Break ch{monitor_ch}/amp: waiting for data, "
                 f"active={self._display_fibre_name(active_fibre)}, "
-                f"other={self._display_fibre_name(other_fibre)}({self._health_text(self._fibre_health[other_fibre])}), "
+                f"other={self._display_fibre_name(other_fibre)}({self._health_text(health_map[other_fibre])}), "
                 f"default={self._display_fibre_name(default_fibre)}, peek={peeking_text}"
             )
             self.break_status.setStyleSheet("")
+            self._update_api_snapshot()
             return
 
-        result = self._fibre_break_result
         state_text = "ALARM" if result.abnormal else "Normal"
         text = (
             f"Fibre Break ch{monitor_ch}/amp: {state_text}, "
             f"sample={self._display_fibre_name(result.fibre_name)}, "
-            f"active={self._display_fibre_name(active_fibre)}({self._health_text(self._fibre_health[active_fibre])}), "
-            f"other={self._display_fibre_name(other_fibre)}({self._health_text(self._fibre_health[other_fibre])}), "
+            f"active={self._display_fibre_name(active_fibre)}({self._health_text(health_map[active_fibre])}), "
+            f"other={self._display_fibre_name(other_fibre)}({self._health_text(health_map[other_fibre])}), "
             f"length={self._format_length_text(result.first_high_distance_m)}, "
             f"last_high_pos={result.first_high_pos}, "
             f"threshold={result.threshold:.3f}, min_len={result.min_length_m:.2f} m, "
@@ -693,6 +754,7 @@ class MainWindow(QMainWindow):
             self.break_status.setStyleSheet("color: #b00020; font-weight: bold;")
         else:
             self.break_status.setStyleSheet("")
+        self._update_api_snapshot()
 
     def _set_switch_combo_for_channel(self, channel: int, fibre_name: str):
         combo = self.switch_ch1 if int(channel) == 1 else self.switch_ch2
@@ -708,16 +770,18 @@ class MainWindow(QMainWindow):
         if detail:
             text = f"{text}. {detail}"
         self.switch_status.setText(text)
+        self._update_api_snapshot()
 
-    def _maybe_auto_switch_current_fibre(self, active_fibre: str) -> bool:
+    def _maybe_auto_switch_current_fibre(self, channel: int, active_fibre: str) -> bool:
         if not self.break_enable_autoswitch.isChecked():
             return False
 
         default_fibre = self._combo_fibre_name(self.break_default_fibre)
         other_fibre = self._other_fibre_name(active_fibre)
-        healthy_cur = self._fibre_health.get(active_fibre)
-        healthy_other = self._fibre_health.get(other_fibre)
-        healthy_default = self._fibre_health.get(default_fibre)
+        health_map = self._channel_health_map(channel)
+        healthy_cur = health_map.get(active_fibre)
+        healthy_other = health_map.get(other_fibre)
+        healthy_default = health_map.get(default_fibre)
 
         target_fibre = active_fibre
         if healthy_cur is False:
@@ -731,7 +795,7 @@ class MainWindow(QMainWindow):
         if target_fibre == active_fibre:
             return False
 
-        monitor_ch = self._selected_break_monitor_channel()
+        monitor_ch = int(channel)
         self.switch_controller.set_fibre(monitor_ch, target_fibre)
         self._set_switch_combo_for_channel(monitor_ch, target_fibre)
         self._cancel_break_peek(reset_counter=True)
@@ -741,7 +805,7 @@ class MainWindow(QMainWindow):
         self._update_fibre_break_status()
         return True
 
-    def _maybe_queue_other_fibre_peek(self, active_fibre: str):
+    def _maybe_queue_other_fibre_peek(self, channel: int, active_fibre: str):
         if not self.break_enable_peek.isChecked() or self._break_peek_state != "idle":
             return
 
@@ -754,7 +818,7 @@ class MainWindow(QMainWindow):
             return
 
         other_fibre = self._other_fibre_name(active_fibre)
-        monitor_ch = self._selected_break_monitor_channel()
+        monitor_ch = int(channel)
         self.switch_controller.set_fibre(monitor_ch, other_fibre)
         self._set_switch_combo_for_channel(monitor_ch, other_fibre)
         self._break_peek_state = "waiting_other"
@@ -772,9 +836,6 @@ class MainWindow(QMainWindow):
             return
 
         ch = int(payload.get("channel", 1))
-        if ch != self._selected_break_monitor_channel():
-            return
-
         block = np.asarray(payload.get("block"), dtype=np.float32)
         if block.ndim != 2 or block.size == 0:
             return
@@ -783,17 +844,34 @@ class MainWindow(QMainWindow):
         scale_down = int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value())
         now_mono = time.monotonic()
         current_fibre = self.switch_controller.current_fibre(ch)
+        detector = self._detector_for_channel(ch)
+        health_map = self._channel_health_map(ch)
+        result_map = self._channel_result_map(ch)
+        monitor_ch = self._selected_break_monitor_channel()
+
+        if ch != monitor_ch:
+            result = detector.update(
+                block,
+                scale_down=scale_down,
+                fibre_name=current_fibre,
+            )
+            self._fibre_break_result_by_channel[ch] = result
+            result_map[current_fibre] = result
+            health_map[current_fibre] = result.healthy
+            self._update_api_snapshot()
+            return
 
         if self._break_peek_state == "waiting_other":
             if current_fibre != self._break_peek_target_fibre or now_mono < self._break_peek_ready_ts:
                 return
 
-            other_result = self.fibre_break_detector.update(
+            other_result = detector.update(
                 block,
                 scale_down=scale_down,
                 fibre_name=self._break_peek_target_fibre,
             )
-            self._fibre_health[self._break_peek_target_fibre] = other_result.healthy
+            result_map[self._break_peek_target_fibre] = other_result
+            health_map[self._break_peek_target_fibre] = other_result.healthy
             self.switch_controller.set_fibre(ch, self._break_peek_return_fibre)
             self._set_switch_combo_for_channel(ch, self._break_peek_return_fibre)
             self._break_peek_state = "waiting_restore"
@@ -812,25 +890,26 @@ class MainWindow(QMainWindow):
             self._break_peek_ready_ts = 0.0
 
         active_fibre = self.switch_controller.current_fibre(ch)
-        result = self.fibre_break_detector.update(
+        result = detector.update(
             block,
             scale_down=scale_down,
             fibre_name=active_fibre,
         )
-        self._fibre_break_result = result
+        self._fibre_break_result_by_channel[ch] = result
         self._fibre_break_last_abnormal = result.abnormal
-        self._fibre_health[active_fibre] = result.healthy
+        result_map[active_fibre] = result
+        health_map[active_fibre] = result.healthy
         self._update_fibre_break_status()
 
         try:
-            if self._maybe_auto_switch_current_fibre(active_fibre):
+            if self._maybe_auto_switch_current_fibre(ch, active_fibre):
                 return
         except Exception as e:
             self.switch_status.setText(f"Switch: Auto switch failed: {e}")
             return
 
         try:
-            self._maybe_queue_other_fibre_peek(active_fibre)
+            self._maybe_queue_other_fibre_peek(ch, active_fibre)
         except Exception as e:
             self.switch_status.setText(f"Switch: Peek failed: {e}")
 
@@ -1392,6 +1471,102 @@ class MainWindow(QMainWindow):
             f"{self._current_column_distance_label(self._wf_src_w, self._wf_scale_down)}"
         )
 
+    @staticmethod
+    def _api_bool(value) -> bool:
+        return bool(value is True)
+
+    def _build_alert_status_payload(self, channel: int) -> dict:
+        channel = 1 if int(channel) == 1 else 2
+        channel_name = self._channel_name_for_api(channel)
+        active_fibre = self.switch_controller.current_fibre(channel)
+        other_fibre = self._other_fibre_name(active_fibre)
+        active_result = self._channel_result_map(channel).get(active_fibre)
+        health_map = self._channel_health_map(channel)
+
+        first_high_pos = -1
+        first_high_distance_m = -1.0
+        abnormal = False
+        if active_result is not None:
+            first_high_pos = int(active_result.first_high_pos)
+            first_high_distance_m = float(active_result.first_high_distance_m)
+            abnormal = bool(active_result.abnormal)
+
+        return {
+            "name": self._alert_name_for_channel(channel),
+            "type": "fibre_break",
+            "channel": channel_name,
+            "metric": "amp",
+            "ts_wall_ms": int(time.time() * 1000),
+            "abnormal": abnormal,
+            "active_healthy": self._api_bool(health_map.get(active_fibre)),
+            "other_healthy": self._api_bool(health_map.get(other_fibre)),
+            "threshold": float(self.break_threshold.value()),
+            "least_len": float(self.break_min_length.value()),
+            "first_high_pos": first_high_pos,
+            "first_high_distance_m": first_high_distance_m,
+            "active_fibre": active_fibre,
+            "other_fibre": other_fibre,
+            "is_peeking_other": self._break_peek_state != "idle",
+            "is_autoswitch_enabled": bool(self.break_enable_autoswitch.isChecked()),
+            "peek_time_interval_ms": int(self.break_peek_delay_ms.value()),
+            "peek_interval_multiple": int(self.break_peek_interval.value()),
+            "default_fibre_name": self._combo_fibre_name(self.break_default_fibre),
+            "relay_id": max(0, channel - 1),
+            "switch_id": 0,
+            "fibre_names": ["main", "standby"],
+        }
+
+    def _build_fibre_health_entry(self, channel: int) -> dict:
+        channel = 1 if int(channel) == 1 else 2
+        active_fibre = self.switch_controller.current_fibre(channel)
+        other_fibre = self._other_fibre_name(active_fibre)
+        active_result = self._channel_result_map(channel).get(active_fibre)
+        health_map = self._channel_health_map(channel)
+
+        current_first_high_distance = -1.0
+        if active_result is not None:
+            current_first_high_distance = float(active_result.first_high_distance_m)
+
+        return {
+            "channel_name": self._channel_name_for_api(channel),
+            "is_healthy": self._api_bool(health_map.get(active_fibre)),
+            "current_first_high_distance": current_first_high_distance,
+            "current_fibre": active_fibre,
+            "is_healthy_other": self._api_bool(health_map.get(other_fibre)),
+            "other_fibre": other_fibre,
+            "is_peeking_other": channel == self._selected_break_monitor_channel() and self._break_peek_state != "idle",
+            "is_autoswitch_enabled": bool(self.break_enable_autoswitch.isChecked()),
+            "peek_time_interval_ms": int(self.break_peek_delay_ms.value()),
+            "peek_other_fibre_interval_multiple": int(self.break_peek_interval.value()),
+            "fibre_names": ["main", "standby"],
+        }
+
+    def _update_api_snapshot(self):
+        alert_payloads = {
+            self._alert_name_for_channel(channel): self._build_alert_status_payload(channel)
+            for channel in (1, 2)
+        }
+        snapshot = {
+            "machine_id": self.machine_id,
+            "channel_count": 2,
+            "alerts": [
+                {
+                    "alert_name": self._alert_name_for_channel(channel),
+                    "type": "fibre_break",
+                }
+                for channel in (1, 2)
+            ],
+            "alert_status_by_name": alert_payloads,
+            "fibre_health": [self._build_fibre_health_entry(channel) for channel in (1, 2)],
+        }
+        with self._api_snapshot_lock:
+            self._api_snapshot = snapshot
+        self.compat_api.set_snapshot(snapshot)
+
+    def _get_api_snapshot(self) -> dict:
+        with self._api_snapshot_lock:
+            return dict(self._api_snapshot)
+
     def closeEvent(self, event):
         try:
             self._save_settings()
@@ -1403,6 +1578,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.switch_controller.close()
+        except Exception:
+            pass
+        try:
+            self.compat_api.stop()
         except Exception:
             pass
         event.accept()
