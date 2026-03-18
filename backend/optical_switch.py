@@ -11,6 +11,12 @@ class Gezhi12SwitchController:
         1: 0x0000,
         2: 0x0003,
     }
+    FIBRE_TO_ENABLED = {
+        "main": False,
+        "standby": True,
+        "off": False,
+        "on": True,
+    }
 
     def __init__(self, baudrate: int = 9600, slave_id: int = 0xFF, timeout: float = 1.0):
         self.baudrate = int(baudrate)
@@ -18,10 +24,30 @@ class Gezhi12SwitchController:
         self.timeout = float(timeout)
         self.port: serial.Serial | None = None
         self.port_name = ""
+        self._current_fibres = {
+            1: "main",
+            2: "main",
+        }
 
     @staticmethod
     def available_ports() -> list[str]:
         return [info.device for info in list_ports.comports()]
+
+    @classmethod
+    def normalize_fibre_name(cls, fibre_name: str, default: str = "main") -> str:
+        name = (fibre_name or "").strip().lower()
+        if name in cls.FIBRE_TO_ENABLED:
+            return "standby" if cls.FIBRE_TO_ENABLED[name] else "main"
+        return default
+
+    @classmethod
+    def enabled_to_fibre_name(cls, enabled: bool) -> str:
+        return "standby" if bool(enabled) else "main"
+
+    @classmethod
+    def fibre_name_to_enabled(cls, fibre_name: str) -> bool:
+        normalized = cls.normalize_fibre_name(fibre_name)
+        return bool(cls.FIBRE_TO_ENABLED[normalized])
 
     @property
     def is_open(self) -> bool:
@@ -52,6 +78,18 @@ class Gezhi12SwitchController:
                 self.port = None
                 self.port_name = ""
 
+    def set_assumed_fibre(self, channel: int, fibre_name: str):
+        channel = int(channel)
+        if channel not in self.CHANNEL_COILS:
+            raise ValueError(f"Unsupported switch channel: {channel}")
+        self._current_fibres[channel] = self.normalize_fibre_name(fibre_name)
+
+    def current_fibre(self, channel: int) -> str:
+        channel = int(channel)
+        if channel not in self.CHANNEL_COILS:
+            raise ValueError(f"Unsupported switch channel: {channel}")
+        return self._current_fibres.get(channel, "main")
+
     def set_channel(self, channel: int, enabled: bool):
         coil_addr = self.CHANNEL_COILS.get(int(channel))
         if coil_addr is None:
@@ -59,10 +97,24 @@ class Gezhi12SwitchController:
 
         command = self._build_single_coil_command(coil_addr, bool(enabled))
         self._send_and_validate(command)
+        self._current_fibres[int(channel)] = self.enabled_to_fibre_name(bool(enabled))
 
     def set_channels(self, ch1_enabled: bool, ch2_enabled: bool):
         self.set_channel(1, ch1_enabled)
         self.set_channel(2, ch2_enabled)
+
+    def set_fibre(self, channel: int, fibre_name: str):
+        self.set_channel(channel, self.fibre_name_to_enabled(fibre_name))
+
+    def set_fibres(self, ch1_fibre: str, ch2_fibre: str):
+        self.set_fibre(1, ch1_fibre)
+        self.set_fibre(2, ch2_fibre)
+
+    def flip_fibre(self, channel: int) -> str:
+        current = self.current_fibre(channel)
+        target = "standby" if current == "main" else "main"
+        self.set_fibre(channel, target)
+        return target
 
     def _send_and_validate(self, command: bytes):
         if not self.is_open or self.port is None:

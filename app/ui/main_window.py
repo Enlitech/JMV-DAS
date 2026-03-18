@@ -70,10 +70,10 @@ class MainWindow(QMainWindow):
         self.btn_switch_connect = QPushButton("Connect Switch")
         self.btn_switch_disconnect = QPushButton("Disconnect Switch")
         self.switch_ch1 = QComboBox()
-        self.switch_ch1.addItems(["OFF", "ON"])
+        self.switch_ch1.addItems(["Main", "Standby"])
         self.switch_ch2 = QComboBox()
-        self.switch_ch2.addItems(["OFF", "ON"])
-        self.btn_switch_apply = QPushButton("Apply Switch State")
+        self.switch_ch2.addItems(["Main", "Standby"])
+        self.btn_switch_apply = QPushButton("Apply Fibre Selection")
         self.switch_status = QLabel("Switch: Disconnected")
         self.switch_status.setWordWrap(True)
 
@@ -99,15 +99,16 @@ class MainWindow(QMainWindow):
         self.break_enable_alarm.setChecked(True)
         self.break_enable_autoswitch = QCheckBox("Auto Switch On Break")
         self.break_enable_autoswitch.setChecked(False)
-        self.break_normal_ch1 = QComboBox()
-        self.break_normal_ch1.addItems(["OFF", "ON"])
-        self.break_normal_ch2 = QComboBox()
-        self.break_normal_ch2.addItems(["OFF", "ON"])
-        self.break_alarm_ch1 = QComboBox()
-        self.break_alarm_ch1.addItems(["OFF", "ON"])
-        self.break_alarm_ch2 = QComboBox()
-        self.break_alarm_ch2.addItems(["OFF", "ON"])
-        self.break_alarm_ch2.setCurrentText("ON")
+        self.break_default_fibre = QComboBox()
+        self.break_default_fibre.addItems(["Main", "Standby"])
+        self.break_enable_peek = QCheckBox("Peek Other Fibre")
+        self.break_enable_peek.setChecked(False)
+        self.break_peek_interval = QSpinBox()
+        self.break_peek_interval.setRange(1, 100000)
+        self.break_peek_interval.setValue(20)
+        self.break_peek_delay_ms = QSpinBox()
+        self.break_peek_delay_ms.setRange(0, 5000)
+        self.break_peek_delay_ms.setValue(200)
         self.break_status = QLabel("Fibre Break: Waiting for amp data")
         self.break_status.setWordWrap(True)
 
@@ -179,9 +180,9 @@ class MainWindow(QMainWindow):
         switch_port_buttons.addWidget(self.btn_switch_connect)
         control_layout.addLayout(switch_port_buttons)
         control_layout.addWidget(self.btn_switch_disconnect)
-        control_layout.addWidget(QLabel("Optical Switch CH1"))
+        control_layout.addWidget(QLabel("Optical Switch CH1 Fibre"))
         control_layout.addWidget(self.switch_ch1)
-        control_layout.addWidget(QLabel("Optical Switch CH2"))
+        control_layout.addWidget(QLabel("Optical Switch CH2 Fibre"))
         control_layout.addWidget(self.switch_ch2)
         control_layout.addWidget(self.btn_switch_apply)
         control_layout.addWidget(self.switch_status)
@@ -195,16 +196,15 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.break_threshold)
         control_layout.addWidget(QLabel("Fibre Break Min Length (m)"))
         control_layout.addWidget(self.break_min_length)
+        control_layout.addWidget(QLabel("Default Fibre"))
+        control_layout.addWidget(self.break_default_fibre)
         control_layout.addWidget(self.break_enable_alarm)
         control_layout.addWidget(self.break_enable_autoswitch)
-        control_layout.addWidget(QLabel("Normal Switch CH1"))
-        control_layout.addWidget(self.break_normal_ch1)
-        control_layout.addWidget(QLabel("Normal Switch CH2"))
-        control_layout.addWidget(self.break_normal_ch2)
-        control_layout.addWidget(QLabel("Alarm Switch CH1"))
-        control_layout.addWidget(self.break_alarm_ch1)
-        control_layout.addWidget(QLabel("Alarm Switch CH2"))
-        control_layout.addWidget(self.break_alarm_ch2)
+        control_layout.addWidget(self.break_enable_peek)
+        control_layout.addWidget(QLabel("Peek Every N Amp Blocks"))
+        control_layout.addWidget(self.break_peek_interval)
+        control_layout.addWidget(QLabel("Peek Settle Delay (ms)"))
+        control_layout.addWidget(self.break_peek_delay_ms)
         control_layout.addWidget(self.break_status)
 
         control_layout.addSpacing(12)
@@ -313,8 +313,12 @@ class MainWindow(QMainWindow):
         self.break_alpha.valueChanged.connect(self._reset_fibre_break_detector)
         self.break_threshold.valueChanged.connect(self._reset_fibre_break_detector)
         self.break_min_length.valueChanged.connect(self._reset_fibre_break_detector)
+        self.break_default_fibre.currentIndexChanged.connect(self._reset_fibre_break_detector)
         self.break_enable_alarm.stateChanged.connect(self._update_fibre_break_status)
         self.break_enable_autoswitch.stateChanged.connect(self._update_fibre_break_status)
+        self.break_enable_peek.stateChanged.connect(self._reset_fibre_break_detector)
+        self.break_peek_interval.valueChanged.connect(self._reset_fibre_break_detector)
+        self.break_peek_delay_ms.valueChanged.connect(self._reset_fibre_break_detector)
 
         # ---- Data cache ----
         self._latest_by_stream = {}  # (ch, kind) -> payload
@@ -361,11 +365,21 @@ class MainWindow(QMainWindow):
         self._wf_drag_origin_start_col = 0
         self._fibre_break_result: FibreBreakResult | None = None
         self._fibre_break_last_abnormal: bool | None = None
+        self._fibre_health = {
+            "main": None,
+            "standby": None,
+        }
+        self._break_peek_state = "idle"
+        self._break_peek_target_fibre = "main"
+        self._break_peek_return_fibre = "main"
+        self._break_peek_ready_ts = 0.0
+        self._break_peek_counter = 0
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
         self._refresh_switch_ports()
         self._load_settings()
+        self._sync_switch_state_from_ui()
         self._update_fibre_break_status()
 
     @staticmethod
@@ -389,6 +403,17 @@ class MainWindow(QMainWindow):
             return float(value)
         except Exception:
             return float(default)
+
+    @staticmethod
+    def _normalize_fibre_name(value, default: str = "main") -> str:
+        return Gezhi12SwitchController.normalize_fibre_name(str(value or ""), default=default)
+
+    @staticmethod
+    def _display_fibre_name(fibre_name: str) -> str:
+        return "Standby" if Gezhi12SwitchController.normalize_fibre_name(fibre_name) == "standby" else "Main"
+
+    def _combo_fibre_name(self, combo: QComboBox, default: str = "main") -> str:
+        return self._normalize_fibre_name(combo.currentText(), default=default)
 
     @staticmethod
     def _set_combo_text(combo: QComboBox, value: str):
@@ -416,12 +441,12 @@ class MainWindow(QMainWindow):
         self._settings.setValue("fibre_break/alpha", self.break_alpha.value())
         self._settings.setValue("fibre_break/threshold", self.break_threshold.value())
         self._settings.setValue("fibre_break/min_length", self.break_min_length.value())
+        self._settings.setValue("fibre_break/default_fibre", self.break_default_fibre.currentText())
         self._settings.setValue("fibre_break/enable_alarm", self.break_enable_alarm.isChecked())
         self._settings.setValue("fibre_break/enable_autoswitch", self.break_enable_autoswitch.isChecked())
-        self._settings.setValue("fibre_break/normal_ch1", self.break_normal_ch1.currentText())
-        self._settings.setValue("fibre_break/normal_ch2", self.break_normal_ch2.currentText())
-        self._settings.setValue("fibre_break/alarm_ch1", self.break_alarm_ch1.currentText())
-        self._settings.setValue("fibre_break/alarm_ch2", self.break_alarm_ch2.currentText())
+        self._settings.setValue("fibre_break/enable_peek", self.break_enable_peek.isChecked())
+        self._settings.setValue("fibre_break/peek_interval", self.break_peek_interval.value())
+        self._settings.setValue("fibre_break/peek_delay_ms", self.break_peek_delay_ms.value())
 
         self._settings.setValue("waterfall/channel", self.wf_channel.currentText())
         self._settings.setValue("waterfall/kind", self.wf_kind.currentText())
@@ -464,11 +489,11 @@ class MainWindow(QMainWindow):
         )
         self._set_combo_text(
             self.switch_ch1,
-            str(self._settings.value("switch/ch1", self.switch_ch1.currentText())),
+            self._display_fibre_name(self._settings.value("switch/ch1", self.switch_ch1.currentText())),
         )
         self._set_combo_text(
             self.switch_ch2,
-            str(self._settings.value("switch/ch2", self.switch_ch2.currentText())),
+            self._display_fibre_name(self._settings.value("switch/ch2", self.switch_ch2.currentText())),
         )
 
         self._set_combo_text(
@@ -484,6 +509,12 @@ class MainWindow(QMainWindow):
         self.break_min_length.setValue(
             self._settings_float(self._settings.value("fibre_break/min_length"), self.break_min_length.value())
         )
+        self._set_combo_text(
+            self.break_default_fibre,
+            self._display_fibre_name(
+                self._settings.value("fibre_break/default_fibre", self.break_default_fibre.currentText())
+            ),
+        )
         self.break_enable_alarm.setChecked(
             self._settings_bool(self._settings.value("fibre_break/enable_alarm"), self.break_enable_alarm.isChecked())
         )
@@ -493,21 +524,17 @@ class MainWindow(QMainWindow):
                 self.break_enable_autoswitch.isChecked(),
             )
         )
-        self._set_combo_text(
-            self.break_normal_ch1,
-            str(self._settings.value("fibre_break/normal_ch1", self.break_normal_ch1.currentText())),
+        self.break_enable_peek.setChecked(
+            self._settings_bool(self._settings.value("fibre_break/enable_peek"), self.break_enable_peek.isChecked())
         )
-        self._set_combo_text(
-            self.break_normal_ch2,
-            str(self._settings.value("fibre_break/normal_ch2", self.break_normal_ch2.currentText())),
+        self.break_peek_interval.setValue(
+            self._settings_int(self._settings.value("fibre_break/peek_interval"), self.break_peek_interval.value())
         )
-        self._set_combo_text(
-            self.break_alarm_ch1,
-            str(self._settings.value("fibre_break/alarm_ch1", self.break_alarm_ch1.currentText())),
-        )
-        self._set_combo_text(
-            self.break_alarm_ch2,
-            str(self._settings.value("fibre_break/alarm_ch2", self.break_alarm_ch2.currentText())),
+        self.break_peek_delay_ms.setValue(
+            self._settings_int(
+                self._settings.value("fibre_break/peek_delay_ms"),
+                self.break_peek_delay_ms.value(),
+            )
         )
 
         self._set_combo_text(
@@ -576,8 +603,13 @@ class MainWindow(QMainWindow):
             return 1
 
     @staticmethod
-    def _combo_state_is_on(combo: QComboBox) -> bool:
-        return combo.currentText() == "ON"
+    def _other_fibre_name(fibre_name: str) -> str:
+        return "standby" if Gezhi12SwitchController.normalize_fibre_name(fibre_name) == "main" else "main"
+
+    def _sync_switch_state_from_ui(self):
+        self.switch_controller.set_assumed_fibre(1, self._combo_fibre_name(self.switch_ch1))
+        self.switch_controller.set_assumed_fibre(2, self._combo_fibre_name(self.switch_ch2))
+        self._refresh_switch_status()
 
     def _sync_fibre_break_detector_config(self):
         self.fibre_break_detector.configure(
@@ -586,11 +618,22 @@ class MainWindow(QMainWindow):
             min_length_m=float(self.break_min_length.value()),
         )
 
+    def _cancel_break_peek(self, reset_counter: bool = False):
+        self._break_peek_state = "idle"
+        self._break_peek_ready_ts = 0.0
+        if reset_counter:
+            self._break_peek_counter = int(self.break_peek_interval.value())
+
     def _reset_fibre_break_detector(self, *args):
         self._sync_fibre_break_detector_config()
         self.fibre_break_detector.reset()
         self._fibre_break_result = None
         self._fibre_break_last_abnormal = None
+        self._fibre_health = {
+            "main": None,
+            "standby": None,
+        }
+        self._cancel_break_peek(reset_counter=True)
         self._update_fibre_break_status()
 
     def _format_length_text(self, distance_m: float) -> str:
@@ -598,12 +641,34 @@ class MainWindow(QMainWindow):
             return "n/a"
         return self.distance_axis._format_distance(distance_m)
 
+    @staticmethod
+    def _health_text(value) -> str:
+        if value is True:
+            return "healthy"
+        if value is False:
+            return "broken"
+        return "unknown"
+
+    def _current_monitor_fibre(self) -> str:
+        return self.switch_controller.current_fibre(self._selected_break_monitor_channel())
+
     def _update_fibre_break_status(self, *args):
         monitor_ch = self._selected_break_monitor_channel()
+        active_fibre = self._current_monitor_fibre()
+        other_fibre = self._other_fibre_name(active_fibre)
+        default_fibre = self._combo_fibre_name(self.break_default_fibre)
+        peeking_text = "idle"
+        if self._break_peek_state == "waiting_other":
+            peeking_text = f"peeking {self._display_fibre_name(self._break_peek_target_fibre)}"
+        elif self._break_peek_state == "waiting_restore":
+            peeking_text = f"returning to {self._display_fibre_name(self._break_peek_return_fibre)}"
+
         if self._fibre_break_result is None:
             self.break_status.setText(
-                f"Fibre Break: Waiting for ch{monitor_ch}/amp data "
-                f"(threshold={self.break_threshold.value():.3f}, min_len={self.break_min_length.value():.2f} m)"
+                f"Fibre Break ch{monitor_ch}/amp: waiting for data, "
+                f"active={self._display_fibre_name(active_fibre)}, "
+                f"other={self._display_fibre_name(other_fibre)}({self._health_text(self._fibre_health[other_fibre])}), "
+                f"default={self._display_fibre_name(default_fibre)}, peek={peeking_text}"
             )
             self.break_status.setStyleSheet("")
             return
@@ -612,9 +677,14 @@ class MainWindow(QMainWindow):
         state_text = "ALARM" if result.abnormal else "Normal"
         text = (
             f"Fibre Break ch{monitor_ch}/amp: {state_text}, "
+            f"sample={self._display_fibre_name(result.fibre_name)}, "
+            f"active={self._display_fibre_name(active_fibre)}({self._health_text(self._fibre_health[active_fibre])}), "
+            f"other={self._display_fibre_name(other_fibre)}({self._health_text(self._fibre_health[other_fibre])}), "
             f"length={self._format_length_text(result.first_high_distance_m)}, "
             f"last_high_pos={result.first_high_pos}, "
             f"threshold={result.threshold:.3f}, min_len={result.min_length_m:.2f} m, "
+            f"default={self._display_fibre_name(default_fibre)}, "
+            f"peek={peeking_text}, "
             f"autoswitch={'ON' if self.break_enable_autoswitch.isChecked() else 'OFF'}"
         )
         self.break_status.setText(text)
@@ -624,22 +694,78 @@ class MainWindow(QMainWindow):
         else:
             self.break_status.setStyleSheet("")
 
-    def _apply_break_switch_preset(self, abnormal: bool):
+    def _set_switch_combo_for_channel(self, channel: int, fibre_name: str):
+        combo = self.switch_ch1 if int(channel) == 1 else self.switch_ch2
+        self._set_combo_text(combo, self._display_fibre_name(fibre_name))
+
+    def _refresh_switch_status(self, detail: str | None = None):
+        ch1 = self._display_fibre_name(self.switch_controller.current_fibre(1))
+        ch2 = self._display_fibre_name(self.switch_controller.current_fibre(2))
+        if self.switch_controller.is_open:
+            text = f"Switch: Connected @ {self.switch_controller.port_name}, CH1={ch1}, CH2={ch2}"
+        else:
+            text = f"Switch: Disconnected, CH1={ch1}, CH2={ch2}"
+        if detail:
+            text = f"{text}. {detail}"
+        self.switch_status.setText(text)
+
+    def _maybe_auto_switch_current_fibre(self, active_fibre: str) -> bool:
         if not self.break_enable_autoswitch.isChecked():
+            return False
+
+        default_fibre = self._combo_fibre_name(self.break_default_fibre)
+        other_fibre = self._other_fibre_name(active_fibre)
+        healthy_cur = self._fibre_health.get(active_fibre)
+        healthy_other = self._fibre_health.get(other_fibre)
+        healthy_default = self._fibre_health.get(default_fibre)
+
+        target_fibre = active_fibre
+        if healthy_cur is False:
+            if healthy_default is True:
+                target_fibre = default_fibre
+            elif healthy_other is True:
+                target_fibre = other_fibre
+        elif active_fibre != default_fibre and healthy_default is True:
+            target_fibre = default_fibre
+
+        if target_fibre == active_fibre:
+            return False
+
+        monitor_ch = self._selected_break_monitor_channel()
+        self.switch_controller.set_fibre(monitor_ch, target_fibre)
+        self._set_switch_combo_for_channel(monitor_ch, target_fibre)
+        self._cancel_break_peek(reset_counter=True)
+        self._refresh_switch_status(
+            f"Auto switched CH{monitor_ch} to {self._display_fibre_name(target_fibre)}"
+        )
+        self._update_fibre_break_status()
+        return True
+
+    def _maybe_queue_other_fibre_peek(self, active_fibre: str):
+        if not self.break_enable_peek.isChecked() or self._break_peek_state != "idle":
             return
 
-        if abnormal:
-            ch1_on = self._combo_state_is_on(self.break_alarm_ch1)
-            ch2_on = self._combo_state_is_on(self.break_alarm_ch2)
-        else:
-            ch1_on = self._combo_state_is_on(self.break_normal_ch1)
-            ch2_on = self._combo_state_is_on(self.break_normal_ch2)
+        interval = max(1, int(self.break_peek_interval.value()))
+        if self._break_peek_counter < interval:
+            self._break_peek_counter += 1
+            return
 
-        self.switch_controller.set_channels(ch1_on, ch2_on)
-        self.switch_status.setText(
-            f"Switch: Auto applied CH1={'ON' if ch1_on else 'OFF'}, "
-            f"CH2={'ON' if ch2_on else 'OFF'} for fibre {'alarm' if abnormal else 'normal'} state"
+        if not self.switch_controller.is_open:
+            return
+
+        other_fibre = self._other_fibre_name(active_fibre)
+        monitor_ch = self._selected_break_monitor_channel()
+        self.switch_controller.set_fibre(monitor_ch, other_fibre)
+        self._set_switch_combo_for_channel(monitor_ch, other_fibre)
+        self._break_peek_state = "waiting_other"
+        self._break_peek_target_fibre = other_fibre
+        self._break_peek_return_fibre = active_fibre
+        self._break_peek_ready_ts = time.monotonic() + max(0.0, self.break_peek_delay_ms.value() / 1000.0)
+        self._break_peek_counter = 0
+        self._refresh_switch_status(
+            f"Peeking {self._display_fibre_name(other_fibre)} on CH{monitor_ch}"
         )
+        self._update_fibre_break_status()
 
     def _update_fibre_break_from_payload(self, payload: dict):
         if str(payload.get("kind", "")) != "amp":
@@ -655,21 +781,58 @@ class MainWindow(QMainWindow):
 
         self._sync_fibre_break_detector_config()
         scale_down = int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value())
-        result = self.fibre_break_detector.update(block, scale_down=scale_down)
-        prev_abnormal = self._fibre_break_last_abnormal
+        now_mono = time.monotonic()
+        current_fibre = self.switch_controller.current_fibre(ch)
+
+        if self._break_peek_state == "waiting_other":
+            if current_fibre != self._break_peek_target_fibre or now_mono < self._break_peek_ready_ts:
+                return
+
+            other_result = self.fibre_break_detector.update(
+                block,
+                scale_down=scale_down,
+                fibre_name=self._break_peek_target_fibre,
+            )
+            self._fibre_health[self._break_peek_target_fibre] = other_result.healthy
+            self.switch_controller.set_fibre(ch, self._break_peek_return_fibre)
+            self._set_switch_combo_for_channel(ch, self._break_peek_return_fibre)
+            self._break_peek_state = "waiting_restore"
+            self._break_peek_ready_ts = now_mono + max(0.0, self.break_peek_delay_ms.value() / 1000.0)
+            self._refresh_switch_status(
+                f"Peeked {self._display_fibre_name(self._break_peek_target_fibre)} and returned to "
+                f"{self._display_fibre_name(self._break_peek_return_fibre)} on CH{ch}"
+            )
+            self._update_fibre_break_status()
+            return
+
+        if self._break_peek_state == "waiting_restore":
+            if current_fibre != self._break_peek_return_fibre or now_mono < self._break_peek_ready_ts:
+                return
+            self._break_peek_state = "idle"
+            self._break_peek_ready_ts = 0.0
+
+        active_fibre = self.switch_controller.current_fibre(ch)
+        result = self.fibre_break_detector.update(
+            block,
+            scale_down=scale_down,
+            fibre_name=active_fibre,
+        )
         self._fibre_break_result = result
         self._fibre_break_last_abnormal = result.abnormal
+        self._fibre_health[active_fibre] = result.healthy
         self._update_fibre_break_status()
 
-        if (
-            prev_abnormal is not None
-            and prev_abnormal != result.abnormal
-            and self.break_enable_autoswitch.isChecked()
-        ):
-            try:
-                self._apply_break_switch_preset(result.abnormal)
-            except Exception as e:
-                self.switch_status.setText(f"Switch: Auto switch failed: {e}")
+        try:
+            if self._maybe_auto_switch_current_fibre(active_fibre):
+                return
+        except Exception as e:
+            self.switch_status.setText(f"Switch: Auto switch failed: {e}")
+            return
+
+        try:
+            self._maybe_queue_other_fibre_peek(active_fibre)
+        except Exception as e:
+            self.switch_status.setText(f"Switch: Peek failed: {e}")
 
     def _update_distance_axis_from_ui(self, *args):
         self._clamp_viewport()
@@ -856,25 +1019,27 @@ class MainWindow(QMainWindow):
         try:
             port_name = (self.switch_port.currentText() or "").strip()
             self.switch_controller.open(port_name)
-            self.switch_status.setText(f"Switch: Connected @ {self.switch_controller.port_name}")
+            self._sync_switch_state_from_ui()
+            self._refresh_switch_status()
         except Exception as e:
             self.switch_status.setText(f"Switch: Connect failed: {e}")
 
     def on_switch_disconnect_clicked(self):
         try:
             self.switch_controller.close()
-            self.switch_status.setText("Switch: Disconnected")
+            self._cancel_break_peek(reset_counter=True)
+            self._refresh_switch_status()
         except Exception as e:
             self.switch_status.setText(f"Switch: Disconnect failed: {e}")
 
     def on_switch_apply_clicked(self):
         try:
-            ch1_on = self.switch_ch1.currentText() == "ON"
-            ch2_on = self.switch_ch2.currentText() == "ON"
-            self.switch_controller.set_channels(ch1_on, ch2_on)
-            self.switch_status.setText(
-                f"Switch: Applied CH1={'ON' if ch1_on else 'OFF'}, CH2={'ON' if ch2_on else 'OFF'}"
-            )
+            ch1_fibre = self._combo_fibre_name(self.switch_ch1)
+            ch2_fibre = self._combo_fibre_name(self.switch_ch2)
+            self.switch_controller.set_fibres(ch1_fibre, ch2_fibre)
+            self._cancel_break_peek(reset_counter=True)
+            self._refresh_switch_status("Applied manual fibre selection")
+            self._update_fibre_break_status()
         except Exception as e:
             self.switch_status.setText(f"Switch: Apply failed: {e}")
 
