@@ -1,3 +1,4 @@
+from pathlib import Path
 import threading
 import time
 import numpy as np
@@ -7,7 +8,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QSpinBox,
-    QDoubleSpinBox, QCheckBox, QScrollArea
+    QDoubleSpinBox, QCheckBox, QScrollArea,
+    QDialog, QTextBrowser, QMessageBox
 )
 
 from collections import deque
@@ -162,6 +164,7 @@ class MainWindow(QMainWindow):
         # Buttons
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
+        self.btn_api_docs = QPushButton("API Docs")
 
         self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
         self.machine_id_label.setWordWrap(True)
@@ -236,6 +239,7 @@ class MainWindow(QMainWindow):
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
         control_layout.addWidget(self.btn_stop)
+        control_layout.addWidget(self.btn_api_docs)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.machine_id_label)
@@ -316,6 +320,7 @@ class MainWindow(QMainWindow):
 
         self.btn_start.clicked.connect(self.on_start_clicked)
         self.btn_stop.clicked.connect(self.on_stop_clicked)
+        self.btn_api_docs.clicked.connect(self.on_api_docs_clicked)
         self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
         self.btn_switch_connect.clicked.connect(self.on_switch_connect_clicked)
         self.btn_switch_disconnect.clicked.connect(self.on_switch_disconnect_clicked)
@@ -400,6 +405,8 @@ class MainWindow(QMainWindow):
             "alert_status_by_name": {},
             "fibre_health": [],
         }
+        self._api_docs_dialog: QDialog | None = None
+        self._api_docs_browser: QTextBrowser | None = None
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
@@ -1077,6 +1084,57 @@ class MainWindow(QMainWindow):
             self.status.setText("Status: Stopped")
         except Exception as e:
             self.status.setText(f"Status: Stop failed: {e}")
+
+    def _api_docs_path(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "docs" / "api.md"
+
+    def _ensure_api_docs_dialog(self):
+        if self._api_docs_dialog is not None and self._api_docs_browser is not None:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("API Documentation")
+        dialog.resize(920, 760)
+
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(True)
+        layout.addWidget(browser)
+
+        close_button = QPushButton("Close", dialog)
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button, 0, Qt.AlignRight)
+
+        self._api_docs_dialog = dialog
+        self._api_docs_browser = browser
+
+    def on_api_docs_clicked(self):
+        docs_path = self._api_docs_path()
+        if not docs_path.exists():
+            QMessageBox.warning(
+                self,
+                "API Documentation",
+                f"Documentation file not found:\n{docs_path}",
+            )
+            return
+
+        try:
+            markdown_text = docs_path.read_text(encoding="utf-8")
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "API Documentation",
+                f"Failed to read documentation:\n{e}",
+            )
+            return
+
+        self._ensure_api_docs_dialog()
+        assert self._api_docs_dialog is not None
+        assert self._api_docs_browser is not None
+        self._api_docs_browser.setMarkdown(markdown_text)
+        self._api_docs_dialog.show()
+        self._api_docs_dialog.raise_()
+        self._api_docs_dialog.activateWindow()
 
     def _refresh_switch_ports(self):
         current_text = (self.switch_port.currentText() or "").strip()
