@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_api_docs = QPushButton("API Docs")
+        self.btn_user_guide = QPushButton("User Guide")
 
         self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
         self.machine_id_label.setWordWrap(True)
@@ -240,6 +241,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.btn_start)
         control_layout.addWidget(self.btn_stop)
         control_layout.addWidget(self.btn_api_docs)
+        control_layout.addWidget(self.btn_user_guide)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.machine_id_label)
@@ -321,6 +323,7 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self.on_start_clicked)
         self.btn_stop.clicked.connect(self.on_stop_clicked)
         self.btn_api_docs.clicked.connect(self.on_api_docs_clicked)
+        self.btn_user_guide.clicked.connect(self.on_user_guide_clicked)
         self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
         self.btn_switch_connect.clicked.connect(self.on_switch_connect_clicked)
         self.btn_switch_disconnect.clicked.connect(self.on_switch_disconnect_clicked)
@@ -405,8 +408,7 @@ class MainWindow(QMainWindow):
             "alert_status_by_name": {},
             "fibre_health": [],
         }
-        self._api_docs_dialog: QDialog | None = None
-        self._api_docs_browser: QTextBrowser | None = None
+        self._docs_dialogs: dict[str, tuple[QDialog, QTextBrowser]] = {}
 
         self._update_ts_title()
         self._update_distance_axis_from_ui()
@@ -1088,12 +1090,16 @@ class MainWindow(QMainWindow):
     def _api_docs_path(self) -> Path:
         return Path(__file__).resolve().parents[2] / "docs" / "api.md"
 
-    def _ensure_api_docs_dialog(self):
-        if self._api_docs_dialog is not None and self._api_docs_browser is not None:
-            return
+    def _user_guide_path(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "docs" / "user_guide.md"
+
+    def _ensure_docs_dialog(self, dialog_key: str, title: str) -> tuple[QDialog, QTextBrowser]:
+        existing = self._docs_dialogs.get(dialog_key)
+        if existing is not None:
+            return existing
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("API Documentation")
+        dialog.setWindowTitle(title)
         dialog.resize(920, 760)
 
         layout = QVBoxLayout(dialog)
@@ -1105,15 +1111,14 @@ class MainWindow(QMainWindow):
         close_button.clicked.connect(dialog.close)
         layout.addWidget(close_button, 0, Qt.AlignRight)
 
-        self._api_docs_dialog = dialog
-        self._api_docs_browser = browser
+        self._docs_dialogs[dialog_key] = (dialog, browser)
+        return dialog, browser
 
-    def on_api_docs_clicked(self):
-        docs_path = self._api_docs_path()
+    def _show_markdown_document(self, docs_path: Path, title: str, dialog_key: str):
         if not docs_path.exists():
             QMessageBox.warning(
                 self,
-                "API Documentation",
+                title,
                 f"Documentation file not found:\n{docs_path}",
             )
             return
@@ -1123,18 +1128,30 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(
                 self,
-                "API Documentation",
+                title,
                 f"Failed to read documentation:\n{e}",
             )
             return
 
-        self._ensure_api_docs_dialog()
-        assert self._api_docs_dialog is not None
-        assert self._api_docs_browser is not None
-        self._api_docs_browser.setMarkdown(markdown_text)
-        self._api_docs_dialog.show()
-        self._api_docs_dialog.raise_()
-        self._api_docs_dialog.activateWindow()
+        dialog, browser = self._ensure_docs_dialog(dialog_key, title)
+        browser.setMarkdown(markdown_text)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def on_api_docs_clicked(self):
+        self._show_markdown_document(
+            self._api_docs_path(),
+            "API Documentation",
+            "api_docs",
+        )
+
+    def on_user_guide_clicked(self):
+        self._show_markdown_document(
+            self._user_guide_path(),
+            "User Guide",
+            "user_guide",
+        )
 
     def _refresh_switch_ports(self):
         current_text = (self.switch_port.currentText() or "").strip()
