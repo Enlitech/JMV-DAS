@@ -2,20 +2,21 @@ import threading
 import time
 import numpy as np
 
-from PySide6.QtCore import Qt, QTimer, QEvent, QSettings
+from PySide6.QtCore import Qt, QTimer, QEvent, QSettings, QUrl
 from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QScrollArea,
-    QDialog, QTextBrowser, QMessageBox
+    QDialog, QTextBrowser, QMessageBox,
+    QLineEdit, QFileDialog
 )
 
 from collections import deque
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QPainter, QDesktopServices
 
-from app.services import DocsService, FibreMonitorService, SwitchService
+from app.services import DocsService, FibreMonitorService, SwitchService, WaterfallRecordingService
 from backend.acquisition import AcquisitionWorker
 from backend.compat_http_api import CompatHttpApiServer
 from backend.machine_id import get_machine_id
@@ -162,8 +163,19 @@ class MainWindow(QMainWindow):
         # Buttons
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
+        self.btn_save_snapshot = QPushButton("Save Snapshot")
+        self.btn_record_start = QPushButton("Start Recording")
+        self.btn_record_stop = QPushButton("Stop Recording")
+        self.btn_record_browse = QPushButton("Browse Folder")
+        self.btn_record_open = QPushButton("Open Folder")
         self.btn_api_docs = QPushButton("API Docs")
         self.btn_user_guide = QPushButton("User Guide")
+        self.record_mode = QComboBox()
+        self.record_mode.addItem("Selected Stream", "selected")
+        self.record_mode.addItem("All Streams", "all")
+        self.record_output_dir = QLineEdit()
+        self.record_status = QLabel("Recording: Idle")
+        self.record_status.setWordWrap(True)
 
         self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
         self.machine_id_label.setWordWrap(True)
@@ -234,6 +246,18 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(QLabel("Gamma"))
         control_layout.addWidget(self.gamma)
         control_layout.addWidget(self.invert)
+
+        control_layout.addSpacing(12)
+        control_layout.addWidget(QLabel("Recording Mode"))
+        control_layout.addWidget(self.record_mode)
+        control_layout.addWidget(QLabel("Recording Output Folder"))
+        control_layout.addWidget(self.record_output_dir)
+        control_layout.addWidget(self.btn_record_browse)
+        control_layout.addWidget(self.btn_record_open)
+        control_layout.addWidget(self.btn_save_snapshot)
+        control_layout.addWidget(self.btn_record_start)
+        control_layout.addWidget(self.btn_record_stop)
+        control_layout.addWidget(self.record_status)
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
@@ -313,11 +337,17 @@ class MainWindow(QMainWindow):
         self.fibre_monitor = FibreMonitorService()
         self.switch_service = SwitchService()
         self.docs_service = DocsService()
+        self.recording_service = WaterfallRecordingService()
         self.compat_api = CompatHttpApiServer()
         self.worker.data_ready.connect(self.on_data_ready)
 
         self.btn_start.clicked.connect(self.on_start_clicked)
         self.btn_stop.clicked.connect(self.on_stop_clicked)
+        self.btn_save_snapshot.clicked.connect(self.on_save_snapshot_clicked)
+        self.btn_record_start.clicked.connect(self.on_record_start_clicked)
+        self.btn_record_stop.clicked.connect(self.on_record_stop_clicked)
+        self.btn_record_browse.clicked.connect(self.on_record_browse_clicked)
+        self.btn_record_open.clicked.connect(self.on_record_open_clicked)
         self.btn_api_docs.clicked.connect(self.on_api_docs_clicked)
         self.btn_user_guide.clicked.connect(self.on_user_guide_clicked)
         self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
@@ -395,6 +425,7 @@ class MainWindow(QMainWindow):
         self._sync_switch_state_from_ui()
         self._update_fibre_break_status()
         self._update_api_snapshot()
+        self._refresh_recording_status()
         self.compat_api.set_snapshot(self._get_api_snapshot())
         if not self.compat_api.start():
             self.status.setText(f"Status: API listen failed on :{self.compat_api.port}: {self.compat_api.last_error}")
@@ -475,6 +506,9 @@ class MainWindow(QMainWindow):
         self._settings.setValue("transform/gamma", self.gamma.value())
         self._settings.setValue("transform/eps", self.eps.value())
         self._settings.setValue("transform/invert", self.invert.isChecked())
+
+        self._settings.setValue("recording/mode", self.record_mode.currentData())
+        self._settings.setValue("recording/output_dir", self.record_output_dir.text())
         self._settings.sync()
 
     def _load_settings(self):
@@ -582,6 +616,15 @@ class MainWindow(QMainWindow):
         self.invert.setChecked(
             self._settings_bool(self._settings.value("transform/invert"), self.invert.isChecked())
         )
+
+        saved_mode = str(self._settings.value("recording/mode", self.record_mode.currentData()))
+        mode_index = self.record_mode.findData(saved_mode)
+        if mode_index >= 0:
+            self.record_mode.setCurrentIndex(mode_index)
+
+        output_dir = str(self._settings.value("recording/output_dir", str(self.recording_service.output_root)))
+        self.record_output_dir.setText(output_dir)
+        self.recording_service.set_output_root(output_dir)
 
         self._reset_fibre_break_detector()
 
@@ -866,6 +909,119 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status.setText(f"Status: Stop failed: {e}")
 
+    def _recording_mode(self) -> str:
+        return str(self.record_mode.currentData() or "selected")
+
+    def _recording_output_dir(self) -> str:
+        return (self.record_output_dir.text() or "").strip()
+
+    def _refresh_recording_status(self):
+        self.record_status.setText(self.recording_service.status_text())
+
+    def _recording_metadata(self) -> dict:
+        sel_ch, sel_kind = self._selected_stream()
+        return {
+            "machine_id": self.machine_id,
+            "selected_stream": {
+                "channel": int(sel_ch),
+                "kind": str(sel_kind),
+            },
+            "acquisition": {
+                "scan_rate": self.scan_rate.currentText(),
+                "mode": self.mode.currentText(),
+                "pulse_width": int(self.pulse_width.value()),
+                "scale_down": int(self.scale_down.value()),
+            },
+            "transform": {
+                "mode": str(self.transform.mode),
+                "energy_win": int(self.energy_win.value()),
+                "vmin": float(self.db_vmin.value()),
+                "vmax": float(self.db_vmax.value()),
+                "gamma": float(self.gamma.value()),
+                "eps": float(self.eps.value()),
+                "invert": bool(self.invert.isChecked()),
+            },
+        }
+
+    def _snapshot_metadata(self) -> dict:
+        sel_ch, sel_kind = self._selected_stream()
+        return {
+            **self._recording_metadata(),
+            "saved_at_epoch_s": time.time(),
+            "waterfall": {
+                "channel": int(sel_ch),
+                "kind": str(sel_kind),
+                "source_width": int(self._wf_src_w or 0),
+                "source_height": int(self._wf_src_h or 0),
+                "view_start_col": int(self._wf_view_start_col),
+                "view_col_count": int(self._effective_view_col_count()),
+                "scale_down": int(self._wf_scale_down or self.scale_down.value()),
+                "ts_col": int(self.ts_col.value()),
+            },
+        }
+
+    def on_record_browse_clicked(self):
+        selected_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Recording Output Folder",
+            self._recording_output_dir() or str(self.recording_service.output_root),
+        )
+        if not selected_dir:
+            return
+        self.record_output_dir.setText(selected_dir)
+        self.recording_service.set_output_root(selected_dir)
+        self._refresh_recording_status()
+
+    def on_record_open_clicked(self):
+        target_dir = self.recording_service.session_dir()
+        if target_dir is None:
+            target_dir = self.recording_service.output_root
+        target_dir = target_dir.expanduser()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir))):
+            QMessageBox.warning(
+                self,
+                "Recording Folder",
+                f"Failed to open folder:\n{target_dir}",
+            )
+
+    def on_record_start_clicked(self):
+        try:
+            self.recording_service.set_output_root(self._recording_output_dir() or self.recording_service.output_root)
+            session_dir = self.recording_service.start_recording(
+                mode=self._recording_mode(),
+                metadata=self._recording_metadata(),
+            )
+            self._refresh_recording_status()
+            self.status.setText(f"Status: Recording started @ {session_dir}")
+        except Exception as e:
+            QMessageBox.warning(self, "Recording", f"Failed to start recording:\n{e}")
+            self._refresh_recording_status()
+
+    def on_record_stop_clicked(self):
+        try:
+            self.recording_service.stop_recording()
+            self._refresh_recording_status()
+            self.status.setText("Status: Recording stopped")
+        except Exception as e:
+            QMessageBox.warning(self, "Recording", f"Failed to stop recording:\n{e}")
+            self._refresh_recording_status()
+
+    def on_save_snapshot_clicked(self):
+        try:
+            pixmap = self.display.pixmap()
+            snapshot_path = self.recording_service.save_snapshot(
+                pixmap=pixmap,
+                values=self.renderer.values,
+                row_times=self.renderer.row_times,
+                metadata=self._snapshot_metadata(),
+            )
+            self._refresh_recording_status()
+            self.status.setText(f"Status: Snapshot saved @ {snapshot_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Save Snapshot", f"Failed to save snapshot:\n{e}")
+            self._refresh_recording_status()
+
     def _ensure_docs_dialog(self, dialog_key: str, title: str) -> tuple[QDialog, QTextBrowser]:
         existing = self._docs_dialogs.get(dialog_key)
         if existing is not None:
@@ -976,6 +1132,7 @@ class MainWindow(QMainWindow):
             ch = int(payload.get("channel", 1))
             kind = str(payload.get("kind", "phase"))
             self._latest_by_stream[(ch, kind)] = payload
+            self.recording_service.handle_payload(payload, selected_stream=self._selected_stream())
             self._update_fibre_break_from_payload(payload)
         except Exception:
             pass
@@ -1247,6 +1404,7 @@ class MainWindow(QMainWindow):
         self._ts_axis_y.setRange(ymin, ymax)
 
     def _tick(self):
+        self._refresh_recording_status()
         payload, sel_ch, sel_kind = self._pull_selected_payload()
         if payload is None:
             return
@@ -1341,6 +1499,10 @@ class MainWindow(QMainWindow):
             pass
         try:
             self.worker.stop()
+        except Exception:
+            pass
+        try:
+            self.recording_service.stop_recording()
         except Exception:
             pass
         try:
