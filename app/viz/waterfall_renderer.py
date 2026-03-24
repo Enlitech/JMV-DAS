@@ -11,6 +11,13 @@ class WaterfallRenderer:
         self.wf = None  # uint8[H,W] grayscale
         self.values = None  # float32[H,W] raw value buffer aligned with wf rows
         self.row_times = None  # float64[H] wall-clock time per row
+        self._lines_per_row = 1
+        self._pending_count = 0
+        self._pending_gray_sum = None
+        self._pending_raw_sum = None
+        self._pending_raw_count = 0
+        self._pending_time_sum = 0.0
+        self._pending_time_count = 0
 
     def clear(self):
         if self.wf is not None:
@@ -19,6 +26,31 @@ class WaterfallRenderer:
             self.values.fill(np.nan)
         if self.row_times is not None:
             self.row_times.fill(np.nan)
+        self._reset_pending()
+
+    @property
+    def lines_per_row(self) -> int:
+        return int(self._lines_per_row)
+
+    def set_lines_per_row(self, lines_per_row: int) -> bool:
+        new_value = max(1, int(lines_per_row))
+        if new_value == self._lines_per_row:
+            return False
+        self._lines_per_row = new_value
+        self.clear()
+        return True
+
+    def _reset_pending(self):
+        self._pending_count = 0
+        self._pending_raw_count = 0
+        self._pending_time_sum = 0.0
+        self._pending_time_count = 0
+        if self.wf_width is not None and self.wf_width > 0:
+            self._pending_gray_sum = np.zeros(self.wf_width, dtype=np.float32)
+            self._pending_raw_sum = np.zeros(self.wf_width, dtype=np.float32)
+        else:
+            self._pending_gray_sum = None
+            self._pending_raw_sum = None
 
     def ensure(self, width: int):
         width = int(width)
@@ -30,6 +62,62 @@ class WaterfallRenderer:
         self.wf = np.zeros((self.wf_height, self.wf_width), dtype=np.uint8)
         self.values = np.full((self.wf_height, self.wf_width), np.nan, dtype=np.float32)
         self.row_times = np.full(self.wf_height, np.nan, dtype=np.float64)
+        self._reset_pending()
+
+    def _append_rows(
+        self,
+        gray_rows: np.ndarray,
+        raw_rows: np.ndarray | None = None,
+        time_rows: np.ndarray | None = None,
+    ):
+        rows = np.asarray(gray_rows, dtype=np.uint8)
+        if rows.ndim != 2 or rows.shape[1] != self.wf_width:
+            return
+
+        n = int(rows.shape[0])
+        if n <= 0:
+            return
+
+        raw = None
+        if raw_rows is not None:
+            raw = np.asarray(raw_rows, dtype=np.float32)
+            if raw.shape != rows.shape:
+                raw = None
+
+        times = None
+        if time_rows is not None:
+            times = np.asarray(time_rows, dtype=np.float64).reshape(-1)
+            if times.size != n:
+                times = None
+
+        if n >= self.wf_height:
+            self.wf[:, :] = rows[-self.wf_height:, :]
+            if self.values is not None:
+                if raw is not None:
+                    self.values[:, :] = raw[-self.wf_height:, :]
+                else:
+                    self.values.fill(np.nan)
+            if self.row_times is not None:
+                if times is not None:
+                    self.row_times[:] = times[-self.wf_height:]
+                else:
+                    self.row_times.fill(np.nan)
+            return
+
+        self.wf[:-n, :] = self.wf[n:, :]
+        self.wf[-n:, :] = rows
+        if self.values is not None:
+            self.values[:-n, :] = self.values[n:, :]
+            if raw is not None:
+                self.values[-n:, :] = raw
+            else:
+                self.values[-n:, :].fill(np.nan)
+        if self.row_times is not None:
+            self.row_times[:-n] = self.row_times[n:]
+            if times is not None:
+                self.row_times[-n:] = times
+            else:
+                self.row_times[-n:].fill(np.nan)
 
     def push_block(
         self,
@@ -60,33 +148,41 @@ class WaterfallRenderer:
             if times.size != n:
                 times = None
 
-        if n >= self.wf_height:
-            self.wf[:, :] = gray_block[-self.wf_height:, :]
-            if self.values is not None:
-                if raw is not None:
-                    self.values[:, :] = raw[-self.wf_height:, :]
-                else:
-                    self.values.fill(np.nan)
-            if self.row_times is not None:
-                if times is not None:
-                    self.row_times[:] = times[-self.wf_height:]
-                else:
-                    self.row_times.fill(np.nan)
-        else:
-            self.wf[:-n, :] = self.wf[n:, :]
-            self.wf[-n:, :] = gray_block
-            if self.values is not None:
-                self.values[:-n, :] = self.values[n:, :]
-                if raw is not None:
-                    self.values[-n:, :] = raw
-                else:
-                    self.values[-n:, :].fill(np.nan)
-            if self.row_times is not None:
-                self.row_times[:-n] = self.row_times[n:]
-                if times is not None:
-                    self.row_times[-n:] = times
-                else:
-                    self.row_times[-n:].fill(np.nan)
+        if self._lines_per_row <= 1:
+            self._append_rows(gray_block, raw_rows=raw, time_rows=times)
+            return
+
+        if self._pending_gray_sum is None or self._pending_gray_sum.size != self.wf_width:
+            self._reset_pending()
+
+        for i in range(n):
+            self._pending_gray_sum += gray_block[i].astype(np.float32, copy=False)
+            self._pending_count += 1
+
+            if raw is not None:
+                self._pending_raw_sum += raw[i]
+                self._pending_raw_count += 1
+
+            if times is not None:
+                self._pending_time_sum += float(times[i])
+                self._pending_time_count += 1
+
+            if self._pending_count < self._lines_per_row:
+                continue
+
+            gray_row = np.rint(self._pending_gray_sum / float(self._pending_count)).astype(np.uint8, copy=False)[None, :]
+            raw_row = None
+            if self._pending_raw_count > 0:
+                raw_row = (self._pending_raw_sum / float(self._pending_raw_count)).astype(np.float32, copy=False)[None, :]
+            time_row = None
+            if self._pending_time_count > 0:
+                time_row = np.array(
+                    [self._pending_time_sum / float(self._pending_time_count)],
+                    dtype=np.float64,
+                )
+
+            self._append_rows(gray_row, raw_rows=raw_row, time_rows=time_row)
+            self._reset_pending()
 
     # -----------------------------
     # Heatmap colormap

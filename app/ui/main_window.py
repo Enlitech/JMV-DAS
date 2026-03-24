@@ -122,6 +122,11 @@ class MainWindow(QMainWindow):
         self.wf_channel.addItems(["1", "2"])
         self.wf_kind = QComboBox()
         self.wf_kind.addItems(["phase", "amp"])
+        self.wf_history_seconds = QDoubleSpinBox()
+        self.wf_history_seconds.setRange(0.1, 3600.0)
+        self.wf_history_seconds.setDecimals(1)
+        self.wf_history_seconds.setSingleStep(1.0)
+        self.wf_history_seconds.setValue(10.0)
 
         # ---- Time-series selection ----
         self.ts_col = QSpinBox()
@@ -232,6 +237,8 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.wf_channel)
         control_layout.addWidget(QLabel("Waterfall Kind"))
         control_layout.addWidget(self.wf_kind)
+        control_layout.addWidget(QLabel("Waterfall History (s)"))
+        control_layout.addWidget(self.wf_history_seconds)
         control_layout.addWidget(QLabel("Time Series Column (pos idx)"))
         control_layout.addWidget(self.ts_col)
 
@@ -387,6 +394,7 @@ class MainWindow(QMainWindow):
         # When selection/params change, allow next tick immediately
         self.wf_channel.currentIndexChanged.connect(self._on_stream_selection_changed)
         self.wf_kind.currentIndexChanged.connect(self._on_stream_selection_changed)
+        self.wf_history_seconds.valueChanged.connect(self._on_wf_history_changed)
         self.energy_win.valueChanged.connect(self._poke_refresh)
         self.db_vmin.valueChanged.connect(self._poke_refresh)
         self.db_vmax.valueChanged.connect(self._poke_refresh)
@@ -400,6 +408,8 @@ class MainWindow(QMainWindow):
         self._wf_src_w = 0   # renderer.wf_width == point_count
         self._wf_src_h = 0   # renderer.wf_height
         self._wf_scale_down = int(self.scale_down.value())
+        self._wf_history_target_s = float(self.wf_history_seconds.value())
+        self._wf_history_effective_s = 0.0
         self._wf_view_start_col = 0
         self._wf_view_col_count = 0
         self._wf_zoom_factor = 1.25
@@ -498,6 +508,7 @@ class MainWindow(QMainWindow):
 
         self._settings.setValue("waterfall/channel", self.wf_channel.currentText())
         self._settings.setValue("waterfall/kind", self.wf_kind.currentText())
+        self._settings.setValue("waterfall/history_seconds", self.wf_history_seconds.value())
         self._settings.setValue("waterfall/ts_col", self.ts_col.value())
 
         self._settings.setValue("transform/energy_win", self.energy_win.value())
@@ -596,6 +607,12 @@ class MainWindow(QMainWindow):
             self.wf_kind,
             str(self._settings.value("waterfall/kind", self.wf_kind.currentText())),
         )
+        self.wf_history_seconds.setValue(
+            self._settings_float(
+                self._settings.value("waterfall/history_seconds"),
+                self.wf_history_seconds.value(),
+            )
+        )
         self._pending_ts_col = self._settings_int(self._settings.value("waterfall/ts_col"), self.ts_col.value())
 
         self.energy_win.setValue(
@@ -625,6 +642,7 @@ class MainWindow(QMainWindow):
         output_dir = str(self._settings.value("recording/output_dir", str(self.recording_service.output_root)))
         self.record_output_dir.setText(output_dir)
         self.recording_service.set_output_root(output_dir)
+        self._sync_waterfall_history(clear=False)
 
         self._reset_fibre_break_detector()
 
@@ -638,6 +656,38 @@ class MainWindow(QMainWindow):
             sel_ch = 1
         sel_kind = self.wf_kind.currentText() or "phase"
         return sel_ch, sel_kind
+
+    def _history_lines_per_row(self, scan_rate_label: str) -> int:
+        hz = self._parse_scan_rate_hz(scan_rate_label)
+        if hz <= 0.0:
+            hz = 1000.0
+        target_s = max(0.1, float(self.wf_history_seconds.value()))
+        return max(1, int(np.ceil(target_s * hz / max(1, int(self.renderer.wf_height)))))
+
+    def _effective_history_seconds(self, scan_rate_label: str, lines_per_row: int | None = None) -> float:
+        hz = self._parse_scan_rate_hz(scan_rate_label)
+        if hz <= 0.0:
+            hz = 1000.0
+        lpr = max(1, int(self.renderer.lines_per_row if lines_per_row is None else lines_per_row))
+        return float(self.renderer.wf_height) * float(lpr) / float(hz)
+
+    def _sync_waterfall_history(self, scan_rate_label: str | None = None, clear: bool = True):
+        scan_label = str(scan_rate_label or self.scan_rate.currentText() or "1k")
+        self._wf_history_target_s = max(0.1, float(self.wf_history_seconds.value()))
+        lines_per_row = self._history_lines_per_row(scan_label)
+        self._wf_history_effective_s = self._effective_history_seconds(scan_label, lines_per_row=lines_per_row)
+        changed = self.renderer.set_lines_per_row(lines_per_row)
+        if changed and clear:
+            self._clear_selected_stream_view()
+            sel_ch, sel_kind = self._selected_stream()
+            self.status.setText(
+                f"Status: Waiting for ch{sel_ch}/{sel_kind} data "
+                f"(history~{self._wf_history_effective_s:.2f}s)"
+            )
+
+    def _on_wf_history_changed(self, *args):
+        self._sync_waterfall_history()
+        self._poke_refresh()
 
     def _clear_selected_stream_view(self):
         self._clear_timeseries_cache()
@@ -941,6 +991,12 @@ class MainWindow(QMainWindow):
                 "eps": float(self.eps.value()),
                 "invert": bool(self.invert.isChecked()),
             },
+            "waterfall": {
+                "history_seconds_target": float(self._wf_history_target_s),
+                "history_seconds_effective": float(self._wf_history_effective_s),
+                "history_lines_per_row": int(self.renderer.lines_per_row),
+                "history_rows": int(self.renderer.wf_height),
+            },
         }
 
     def _snapshot_metadata(self) -> dict:
@@ -957,6 +1013,10 @@ class MainWindow(QMainWindow):
                 "view_col_count": int(self._effective_view_col_count()),
                 "scale_down": int(self._wf_scale_down or self.scale_down.value()),
                 "ts_col": int(self.ts_col.value()),
+                "history_seconds_target": float(self._wf_history_target_s),
+                "history_seconds_effective": float(self._wf_history_effective_s),
+                "history_lines_per_row": int(self.renderer.lines_per_row),
+                "history_rows": int(self.renderer.wf_height),
             },
         }
 
@@ -1441,6 +1501,7 @@ class MainWindow(QMainWindow):
 
             prev_point_count = int(self._wf_src_w or 0)
             was_full_view = prev_point_count <= 0 or self._effective_view_col_count(prev_point_count) >= prev_point_count
+            self._sync_waterfall_history(cfg_scan, clear=False)
             self.renderer.ensure(point_count)
             if self.renderer.wf is None:
                 return
@@ -1464,6 +1525,7 @@ class MainWindow(QMainWindow):
                 f"win={self.transform.energy_win}, dB=({self.transform.vmin:.1f},{self.transform.vmax:.1f}), "
                 f"gamma={self.transform.gamma:.2f}, "
                 f"cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, "
+                f"hist~{self._wf_history_effective_s:.2f}s, lpr={self.renderer.lines_per_row}, "
                 f"lines={num_lines}, points={point_count}, "
                 f"{self._current_column_distance_text(point_count, sd)})"
             )
