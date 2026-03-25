@@ -4,6 +4,7 @@ import json
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,7 @@ class WaterfallRecordingService:
                 "kind": "waterfall_recording_session",
                 "started_at_epoch_s": now,
                 "started_at_local": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "started_at_utc": self._format_utc(now),
                 "recording_mode": selected_mode,
                 "metadata": metadata or {},
             }
@@ -123,6 +125,7 @@ class WaterfallRecordingService:
             summary = self.session_summary()
             summary["stopped_at_epoch_s"] = time.time()
             summary["stopped_at_local"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(summary["stopped_at_epoch_s"]))
+            summary["stopped_at_utc"] = self._format_utc(summary["stopped_at_epoch_s"])
             self._write_json(session_dir / "summary.json", summary)
 
     def handle_payload(self, payload: dict, selected_stream: tuple[int, str]):
@@ -275,6 +278,8 @@ class WaterfallRecordingService:
             "channel": channel,
             "kind": kind,
             "ts": ts,
+            "ts_local": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)),
+            "ts_utc": self._format_utc(ts),
             "cfg_scan_rate": data["cfg_scan_rate"],
             "cfg_mode": data["cfg_mode"],
             "cfg_pulse_width": data["cfg_pulse_width"],
@@ -310,6 +315,10 @@ class WaterfallRecordingService:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _format_utc(epoch_s: float) -> str:
+        return datetime.fromtimestamp(float(epoch_s), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     @staticmethod
     def _format_bytes(size: int) -> str:

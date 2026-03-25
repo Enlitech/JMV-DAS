@@ -184,6 +184,8 @@ class MainWindow(QMainWindow):
 
         self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
         self.machine_id_label.setWordWrap(True)
+        self.clock_label = QLabel("Time: --")
+        self.clock_label.setWordWrap(True)
         self.status = QLabel("Status: Idle")
         self.status.setWordWrap(True)
 
@@ -274,6 +276,7 @@ class MainWindow(QMainWindow):
 
         control_layout.addSpacing(16)
         control_layout.addWidget(self.machine_id_label)
+        control_layout.addWidget(self.clock_label)
         control_layout.addWidget(self.status)
       
         # ---- Right panel: time-series (top) + waterfall (bottom) ----
@@ -436,6 +439,7 @@ class MainWindow(QMainWindow):
         self._update_fibre_break_status()
         self._update_api_snapshot()
         self._refresh_recording_status()
+        self._update_clock_label()
         self.compat_api.set_snapshot(self._get_api_snapshot())
         if not self.compat_api.start():
             self.status.setText(f"Status: API listen failed on :{self.compat_api.port}: {self.compat_api.last_error}")
@@ -968,6 +972,34 @@ class MainWindow(QMainWindow):
     def _refresh_recording_status(self):
         self.record_status.setText(self.recording_service.status_text())
 
+    @staticmethod
+    def _format_local_datetime(epoch_s: float) -> str:
+        if not np.isfinite(epoch_s):
+            return "n/a"
+        whole = int(epoch_s)
+        ms = int(round((epoch_s - whole) * 1000.0))
+        if ms >= 1000:
+            whole += 1
+            ms = 0
+        return f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(whole))}.{ms:03d}"
+
+    @staticmethod
+    def _format_utc_datetime(epoch_s: float) -> str:
+        if not np.isfinite(epoch_s):
+            return "n/a"
+        whole = int(epoch_s)
+        ms = int(round((epoch_s - whole) * 1000.0))
+        if ms >= 1000:
+            whole += 1
+            ms = 0
+        return f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(whole))}.{ms:03d} UTC"
+
+    def _update_clock_label(self):
+        now = time.time()
+        self.clock_label.setText(
+            f"Time: Local {self._format_local_datetime(now)} | UTC {self._format_utc_datetime(now)}"
+        )
+
     def _recording_metadata(self) -> dict:
         sel_ch, sel_kind = self._selected_stream()
         return {
@@ -1001,9 +1033,12 @@ class MainWindow(QMainWindow):
 
     def _snapshot_metadata(self) -> dict:
         sel_ch, sel_kind = self._selected_stream()
+        now = time.time()
         return {
             **self._recording_metadata(),
-            "saved_at_epoch_s": time.time(),
+            "saved_at_epoch_s": now,
+            "saved_at_local": self._format_local_datetime(now),
+            "saved_at_utc": self._format_utc_datetime(now),
             "waterfall": {
                 "channel": int(sel_ch),
                 "kind": str(sel_kind),
@@ -1465,6 +1500,7 @@ class MainWindow(QMainWindow):
 
     def _tick(self):
         self._refresh_recording_status()
+        self._update_clock_label()
         payload, sel_ch, sel_kind = self._pull_selected_payload()
         if payload is None:
             return
