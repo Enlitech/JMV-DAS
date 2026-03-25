@@ -127,6 +127,21 @@ class MainWindow(QMainWindow):
         self.wf_history_seconds.setDecimals(1)
         self.wf_history_seconds.setSingleStep(1.0)
         self.wf_history_seconds.setValue(10.0)
+        self.wf_range_enabled = QCheckBox("Enable Range Filter")
+        self.wf_range_start_m = QDoubleSpinBox()
+        self.wf_range_start_m.setRange(0.0, 1_000_000.0)
+        self.wf_range_start_m.setDecimals(2)
+        self.wf_range_start_m.setSingleStep(10.0)
+        self.wf_range_start_m.setValue(0.0)
+        self.wf_range_end_m = QDoubleSpinBox()
+        self.wf_range_end_m.setRange(0.0, 1_000_000.0)
+        self.wf_range_end_m.setDecimals(2)
+        self.wf_range_end_m.setSingleStep(10.0)
+        self.wf_range_end_m.setValue(500.0)
+        self.btn_wf_range_use_view = QPushButton("Use Current View")
+        self.btn_wf_range_reset = QPushButton("Reset Full Range")
+        self.wf_range_status = QLabel("Range Filter: Full Range")
+        self.wf_range_status.setWordWrap(True)
 
         # ---- Time-series selection ----
         self.ts_col = QSpinBox()
@@ -178,6 +193,9 @@ class MainWindow(QMainWindow):
         self.record_mode = QComboBox()
         self.record_mode.addItem("Selected Stream", "selected")
         self.record_mode.addItem("All Streams", "all")
+        self.record_scope = QComboBox()
+        self.record_scope.addItem("Record Full Block", "full")
+        self.record_scope.addItem("Record Filtered Range", "filtered")
         self.record_output_dir = QLineEdit()
         self.record_status = QLabel("Recording: Idle")
         self.record_status.setWordWrap(True)
@@ -241,6 +259,14 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.wf_kind)
         control_layout.addWidget(QLabel("Waterfall History (s)"))
         control_layout.addWidget(self.wf_history_seconds)
+        control_layout.addWidget(self.wf_range_enabled)
+        control_layout.addWidget(QLabel("Range Start Distance (m)"))
+        control_layout.addWidget(self.wf_range_start_m)
+        control_layout.addWidget(QLabel("Range End Distance (m)"))
+        control_layout.addWidget(self.wf_range_end_m)
+        control_layout.addWidget(self.btn_wf_range_use_view)
+        control_layout.addWidget(self.btn_wf_range_reset)
+        control_layout.addWidget(self.wf_range_status)
         control_layout.addWidget(QLabel("Time Series Column (pos idx)"))
         control_layout.addWidget(self.ts_col)
 
@@ -259,6 +285,8 @@ class MainWindow(QMainWindow):
         control_layout.addSpacing(12)
         control_layout.addWidget(QLabel("Recording Mode"))
         control_layout.addWidget(self.record_mode)
+        control_layout.addWidget(QLabel("Recording Scope"))
+        control_layout.addWidget(self.record_scope)
         control_layout.addWidget(QLabel("Recording Output Folder"))
         control_layout.addWidget(self.record_output_dir)
         control_layout.addWidget(self.btn_record_browse)
@@ -360,6 +388,8 @@ class MainWindow(QMainWindow):
         self.btn_record_open.clicked.connect(self.on_record_open_clicked)
         self.btn_api_docs.clicked.connect(self.on_api_docs_clicked)
         self.btn_user_guide.clicked.connect(self.on_user_guide_clicked)
+        self.btn_wf_range_use_view.clicked.connect(self.on_wf_range_use_view_clicked)
+        self.btn_wf_range_reset.clicked.connect(self.on_wf_range_reset_clicked)
         self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
         self.btn_switch_connect.clicked.connect(self.on_switch_connect_clicked)
         self.btn_switch_disconnect.clicked.connect(self.on_switch_disconnect_clicked)
@@ -398,6 +428,9 @@ class MainWindow(QMainWindow):
         self.wf_channel.currentIndexChanged.connect(self._on_stream_selection_changed)
         self.wf_kind.currentIndexChanged.connect(self._on_stream_selection_changed)
         self.wf_history_seconds.valueChanged.connect(self._on_wf_history_changed)
+        self.wf_range_enabled.stateChanged.connect(self._on_wf_range_changed)
+        self.wf_range_start_m.valueChanged.connect(self._on_wf_range_changed)
+        self.wf_range_end_m.valueChanged.connect(self._on_wf_range_changed)
         self.energy_win.valueChanged.connect(self._poke_refresh)
         self.db_vmin.valueChanged.connect(self._poke_refresh)
         self.db_vmax.valueChanged.connect(self._poke_refresh)
@@ -411,6 +444,9 @@ class MainWindow(QMainWindow):
         self._wf_src_w = 0   # renderer.wf_width == point_count
         self._wf_src_h = 0   # renderer.wf_height
         self._wf_scale_down = int(self.scale_down.value())
+        self._wf_source_point_count = 0
+        self._wf_data_start_col = 0
+        self._wf_data_source_end_col = 0
         self._wf_history_target_s = float(self.wf_history_seconds.value())
         self._wf_history_effective_s = 0.0
         self._wf_view_start_col = 0
@@ -437,6 +473,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._sync_switch_state_from_ui()
         self._update_fibre_break_status()
+        self._update_wf_range_status()
         self._update_api_snapshot()
         self._refresh_recording_status()
         self._update_clock_label()
@@ -513,6 +550,9 @@ class MainWindow(QMainWindow):
         self._settings.setValue("waterfall/channel", self.wf_channel.currentText())
         self._settings.setValue("waterfall/kind", self.wf_kind.currentText())
         self._settings.setValue("waterfall/history_seconds", self.wf_history_seconds.value())
+        self._settings.setValue("waterfall/range_enabled", self.wf_range_enabled.isChecked())
+        self._settings.setValue("waterfall/range_start_m", self.wf_range_start_m.value())
+        self._settings.setValue("waterfall/range_end_m", self.wf_range_end_m.value())
         self._settings.setValue("waterfall/ts_col", self.ts_col.value())
 
         self._settings.setValue("transform/energy_win", self.energy_win.value())
@@ -523,6 +563,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("transform/invert", self.invert.isChecked())
 
         self._settings.setValue("recording/mode", self.record_mode.currentData())
+        self._settings.setValue("recording/scope", self.record_scope.currentData())
         self._settings.setValue("recording/output_dir", self.record_output_dir.text())
         self._settings.sync()
 
@@ -617,6 +658,15 @@ class MainWindow(QMainWindow):
                 self.wf_history_seconds.value(),
             )
         )
+        self.wf_range_enabled.setChecked(
+            self._settings_bool(self._settings.value("waterfall/range_enabled"), self.wf_range_enabled.isChecked())
+        )
+        self.wf_range_start_m.setValue(
+            self._settings_float(self._settings.value("waterfall/range_start_m"), self.wf_range_start_m.value())
+        )
+        self.wf_range_end_m.setValue(
+            self._settings_float(self._settings.value("waterfall/range_end_m"), self.wf_range_end_m.value())
+        )
         self._pending_ts_col = self._settings_int(self._settings.value("waterfall/ts_col"), self.ts_col.value())
 
         self.energy_win.setValue(
@@ -642,11 +692,16 @@ class MainWindow(QMainWindow):
         mode_index = self.record_mode.findData(saved_mode)
         if mode_index >= 0:
             self.record_mode.setCurrentIndex(mode_index)
+        saved_scope = str(self._settings.value("recording/scope", self.record_scope.currentData()))
+        scope_index = self.record_scope.findData(saved_scope)
+        if scope_index >= 0:
+            self.record_scope.setCurrentIndex(scope_index)
 
         output_dir = str(self._settings.value("recording/output_dir", str(self.recording_service.output_root)))
         self.record_output_dir.setText(output_dir)
         self.recording_service.set_output_root(output_dir)
         self._sync_waterfall_history(clear=False)
+        self._update_wf_range_status()
 
         self._reset_fibre_break_detector()
 
@@ -660,6 +715,129 @@ class MainWindow(QMainWindow):
             sel_ch = 1
         sel_kind = self.wf_kind.currentText() or "phase"
         return sel_ch, sel_kind
+
+    def _recording_scope(self) -> str:
+        return str(self.record_scope.currentData() or "full")
+
+    def _spacing_m(self, scale_down: int | None = None) -> float:
+        return DistanceAxis.base_spacing_m() * max(1, int(self._wf_scale_down if scale_down is None else scale_down))
+
+    def _absolute_col(self, local_col: int) -> int:
+        return max(0, int(self._wf_data_start_col) + max(0, int(local_col)))
+
+    def _current_range_filter_state(
+        self,
+        point_count: int | None = None,
+        scale_down: int | None = None,
+    ) -> dict:
+        total_cols = max(0, int(self._wf_source_point_count if point_count is None else point_count))
+        spacing_m = self._spacing_m(scale_down)
+        enabled = bool(self.wf_range_enabled.isChecked()) and total_cols > 0
+        full_end_m = max(0.0, (total_cols - 1) * spacing_m) if total_cols > 0 else 0.0
+        if not enabled:
+            return {
+                "enabled": False,
+                "start_m": 0.0,
+                "end_m": full_end_m,
+                "start_col": 0,
+                "end_col": total_cols,
+                "source_point_count": total_cols,
+                "filtered_point_count": total_cols,
+            }
+
+        start_m = max(0.0, float(self.wf_range_start_m.value()))
+        end_m = max(0.0, float(self.wf_range_end_m.value()))
+        if end_m < start_m:
+            start_m, end_m = end_m, start_m
+
+        if total_cols <= 1:
+            return {
+                "enabled": True,
+                "start_m": start_m,
+                "end_m": end_m,
+                "start_col": 0,
+                "end_col": min(1, total_cols),
+                "source_point_count": total_cols,
+                "filtered_point_count": min(1, total_cols),
+            }
+
+        start_col = int(np.floor(start_m / spacing_m))
+        end_col = int(np.ceil(end_m / spacing_m)) + 1
+        start_col = max(0, min(start_col, total_cols - 1))
+        end_col = max(start_col + 1, min(end_col, total_cols))
+        return {
+            "enabled": True,
+            "start_m": start_m,
+            "end_m": end_m,
+            "start_col": start_col,
+            "end_col": end_col,
+            "source_point_count": total_cols,
+            "filtered_point_count": max(0, end_col - start_col),
+        }
+
+    def _current_range_text(self, range_state: dict | None = None, scale_down: int | None = None) -> str:
+        state = self._current_range_filter_state() if range_state is None else range_state
+        spacing_m = self._spacing_m(scale_down)
+        if not state["enabled"]:
+            if state["source_point_count"] > 0:
+                end_distance = max(0.0, (state["source_point_count"] - 1) * spacing_m)
+                return f"Full Range: 0 m - {self.distance_axis._format_distance(end_distance)}"
+            return "Full Range"
+        start_distance = state["start_col"] * spacing_m
+        end_distance = max(start_distance, (state["end_col"] - 1) * spacing_m)
+        return (
+            f"Filtered Range: {self.distance_axis._format_distance(start_distance)}"
+            f" - {self.distance_axis._format_distance(end_distance)}"
+        )
+
+    def _update_wf_range_status(self, point_count: int | None = None, scale_down: int | None = None):
+        self.wf_range_status.setText(
+            f"Range Filter: {self._current_range_text(self._current_range_filter_state(point_count, scale_down), scale_down=scale_down)}"
+        )
+
+    def _apply_wf_range_filter(self, payload: dict) -> tuple[dict, dict]:
+        point_count = int(payload.get("point_count", 0) or 0)
+        if point_count <= 0:
+            return payload, self._current_range_filter_state(point_count=0, scale_down=int(payload.get("cfg_scale_down", 1) or 1))
+
+        scale_down = int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value())
+        range_state = self._current_range_filter_state(point_count=point_count, scale_down=scale_down)
+        start_col = int(range_state["start_col"])
+        end_col = int(range_state["end_col"])
+        if start_col <= 0 and end_col >= point_count:
+            if not range_state["enabled"]:
+                return payload, range_state
+            passthrough = dict(payload)
+            passthrough["range_filter"] = {
+                "enabled": bool(range_state["enabled"]),
+                "start_m": float(range_state["start_m"]),
+                "end_m": float(range_state["end_m"]),
+                "start_col": start_col,
+                "end_col": end_col,
+                "source_point_count": int(range_state["source_point_count"]),
+                "filtered_point_count": int(range_state["filtered_point_count"]),
+            }
+            return passthrough, range_state
+
+        block = np.asarray(payload["block"], dtype=np.float32)
+        cropped = dict(payload)
+        cropped["block"] = np.array(block[:, start_col:end_col], dtype=np.float32, copy=True)
+        cropped["point_count"] = int(cropped["block"].shape[1])
+        cropped["range_filter"] = {
+            "enabled": bool(range_state["enabled"]),
+            "start_m": float(range_state["start_m"]),
+            "end_m": float(range_state["end_m"]),
+            "start_col": start_col,
+            "end_col": end_col,
+            "source_point_count": int(range_state["source_point_count"]),
+            "filtered_point_count": int(range_state["filtered_point_count"]),
+        }
+        return cropped, range_state
+
+    def _on_wf_range_changed(self, *args):
+        self._update_wf_range_status()
+        self._clear_selected_stream_view()
+        self._poke_refresh()
 
     def _history_lines_per_row(self, scan_rate_label: str) -> int:
         hz = self._parse_scan_rate_hz(scan_rate_label)
@@ -698,12 +876,20 @@ class MainWindow(QMainWindow):
         self._ts_last_t = 0.0
         self._ts_series.clear()
         self.renderer.clear()
+        self._wf_src_w = 0
+        self._wf_src_h = 0
+        self._wf_source_point_count = 0
+        self._wf_data_start_col = 0
+        self._wf_data_source_end_col = 0
+        self._wf_view_start_col = 0
+        self._wf_view_col_count = 0
         self.display.clear()
         self.display.setText("Waiting for selected stream...")
         self.display.setToolTip("")
         self.hover_info.setText("Hover waterfall to inspect point")
         self._last_update_ts = 0.0
         self._update_ts_title()
+        self._update_distance_axis_from_ui()
 
     def _on_stream_selection_changed(self, *args):
         self._clear_selected_stream_view()
@@ -801,11 +987,15 @@ class MainWindow(QMainWindow):
     def _update_distance_axis_from_ui(self, *args):
         self._clamp_viewport()
         self.distance_axis.set_axis_state(
-            point_count=int(self._wf_src_w or 0),
+            point_count=int(self._wf_source_point_count or self._wf_src_w or 0),
             scale_down=int(self._wf_scale_down or self.scale_down.value()),
-            selected_col=int(self.ts_col.value()),
-            view_start_col=int(self._wf_view_start_col),
+            selected_col=int(self._absolute_col(self.ts_col.value())),
+            view_start_col=int(self._wf_data_start_col + self._wf_view_start_col),
             view_point_count=int(self._effective_view_col_count()),
+        )
+        self._update_wf_range_status(
+            point_count=int(self._wf_source_point_count or self._wf_src_w or 0),
+            scale_down=int(self._wf_scale_down or self.scale_down.value()),
         )
 
     def _on_ts_col_changed(self, *args):
@@ -930,16 +1120,18 @@ class MainWindow(QMainWindow):
             return "col=0, dist=n/a"
 
         col = min(max(0, int(self.ts_col.value())), point_count - 1)
-        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
-        return f"col={col}, dist={self.distance_axis._format_distance(distance_m)}"
+        abs_col = self._absolute_col(col)
+        distance_m = abs_col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
+        return f"col={abs_col}, dist={self.distance_axis._format_distance(distance_m)}"
 
     def _current_column_distance_label(self, point_count: int, scale_down: int) -> str:
         if point_count <= 0:
             return "column 0"
 
         col = min(max(0, int(self.ts_col.value())), point_count - 1)
-        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
-        return f"column {col} ({self.distance_axis._format_distance(distance_m)})"
+        abs_col = self._absolute_col(col)
+        distance_m = abs_col * DistanceAxis.base_spacing_m() * max(1, int(scale_down))
+        return f"column {abs_col} ({self.distance_axis._format_distance(distance_m)})"
 
     def on_start_clicked(self):
         try:
@@ -1002,6 +1194,7 @@ class MainWindow(QMainWindow):
 
     def _recording_metadata(self) -> dict:
         sel_ch, sel_kind = self._selected_stream()
+        range_state = self._current_range_filter_state()
         return {
             "machine_id": self.machine_id,
             "selected_stream": {
@@ -1028,12 +1221,21 @@ class MainWindow(QMainWindow):
                 "history_seconds_effective": float(self._wf_history_effective_s),
                 "history_lines_per_row": int(self.renderer.lines_per_row),
                 "history_rows": int(self.renderer.wf_height),
+                "range_filter_enabled": bool(range_state["enabled"]),
+                "range_start_m": float(range_state["start_m"]),
+                "range_end_m": float(range_state["end_m"]),
+                "range_start_col": int(range_state["start_col"]),
+                "range_end_col": int(range_state["end_col"]),
+                "source_point_count": int(range_state["source_point_count"]),
+                "filtered_point_count": int(range_state["filtered_point_count"]),
             },
+            "recording_scope": str(self._recording_scope()),
         }
 
     def _snapshot_metadata(self) -> dict:
         sel_ch, sel_kind = self._selected_stream()
         now = time.time()
+        range_state = self._current_range_filter_state()
         return {
             **self._recording_metadata(),
             "saved_at_epoch_s": now,
@@ -1046,14 +1248,43 @@ class MainWindow(QMainWindow):
                 "source_height": int(self._wf_src_h or 0),
                 "view_start_col": int(self._wf_view_start_col),
                 "view_col_count": int(self._effective_view_col_count()),
+                "absolute_view_start_col": int(self._wf_data_start_col + self._wf_view_start_col),
                 "scale_down": int(self._wf_scale_down or self.scale_down.value()),
                 "ts_col": int(self.ts_col.value()),
+                "absolute_ts_col": int(self._absolute_col(self.ts_col.value())),
                 "history_seconds_target": float(self._wf_history_target_s),
                 "history_seconds_effective": float(self._wf_history_effective_s),
                 "history_lines_per_row": int(self.renderer.lines_per_row),
                 "history_rows": int(self.renderer.wf_height),
+                "range_filter_enabled": bool(range_state["enabled"]),
+                "range_start_m": float(range_state["start_m"]),
+                "range_end_m": float(range_state["end_m"]),
+                "range_start_col": int(range_state["start_col"]),
+                "range_end_col": int(range_state["end_col"]),
+                "source_point_count": int(range_state["source_point_count"]),
+                "filtered_point_count": int(range_state["filtered_point_count"]),
             },
         }
+
+    def on_wf_range_use_view_clicked(self):
+        total_cols = int(self._wf_src_w or 0)
+        if total_cols <= 0:
+            return
+        spacing_m = self._spacing_m()
+        abs_start = int(self._wf_data_start_col + self._wf_view_start_col)
+        abs_end = int(abs_start + self._effective_view_col_count() - 1)
+        self.wf_range_enabled.setChecked(True)
+        self.wf_range_start_m.setValue(abs_start * spacing_m)
+        self.wf_range_end_m.setValue(max(abs_start * spacing_m, abs_end * spacing_m))
+        self._on_wf_range_changed()
+
+    def on_wf_range_reset_clicked(self):
+        self.wf_range_enabled.setChecked(False)
+        self.wf_range_start_m.setValue(0.0)
+        total_cols = int(self._wf_source_point_count or self._wf_src_w or 0)
+        end_distance = max(0.0, (total_cols - 1) * self._spacing_m()) if total_cols > 0 else 0.0
+        self.wf_range_end_m.setValue(end_distance)
+        self._on_wf_range_changed()
 
     def on_record_browse_clicked(self):
         selected_dir = QFileDialog.getExistingDirectory(
@@ -1227,7 +1458,10 @@ class MainWindow(QMainWindow):
             ch = int(payload.get("channel", 1))
             kind = str(payload.get("kind", "phase"))
             self._latest_by_stream[(ch, kind)] = payload
-            self.recording_service.handle_payload(payload, selected_stream=self._selected_stream())
+            recording_payload = payload
+            if self._recording_scope() == "filtered":
+                recording_payload, _ = self._apply_wf_range_filter(payload)
+            self.recording_service.handle_payload(recording_payload, selected_stream=self._selected_stream())
             self._update_fibre_break_from_payload(payload)
         except Exception:
             pass
@@ -1346,7 +1580,8 @@ class MainWindow(QMainWindow):
             return
 
         sel_ch, sel_kind = self._selected_stream()
-        distance_m = col * DistanceAxis.base_spacing_m() * max(1, int(self._wf_scale_down))
+        abs_col = self._absolute_col(col)
+        distance_m = abs_col * DistanceAxis.base_spacing_m() * max(1, int(self._wf_scale_down))
         value = float(self.renderer.values[row, col])
         row_time = float(self.renderer.row_times[row])
 
@@ -1361,7 +1596,7 @@ class MainWindow(QMainWindow):
             f"dist={self.distance_axis._format_distance(distance_m)}, "
             f"time={self._format_time_of_day(row_time)}{delta_text}, "
             f"{self._format_hover_value(value, sel_kind)}, "
-            f"row={row}, col={col}"
+            f"row={row}, col={abs_col}"
         )
         self._set_hover_info(text)
 
@@ -1520,8 +1755,6 @@ class MainWindow(QMainWindow):
             num_lines = int(payload["cb_lines"])
             block = payload["block"]
 
-            self._last_point_count_for_click = point_count
-
             if point_count <= 0 or num_lines <= 0:
                 return
 
@@ -1531,6 +1764,22 @@ class MainWindow(QMainWindow):
                 num_lines = block.shape[0]
                 if num_lines <= 0:
                     return
+
+            original_point_count = int(point_count)
+            self._wf_source_point_count = int(original_point_count)
+            payload_for_display, range_state = self._apply_wf_range_filter(
+                {
+                    **payload,
+                    "block": block,
+                    "point_count": original_point_count,
+                    "cb_lines": num_lines,
+                }
+            )
+            block = np.asarray(payload_for_display["block"], dtype=np.float32)
+            point_count = int(payload_for_display["point_count"])
+            self._wf_data_start_col = int(range_state["start_col"])
+            self._wf_data_source_end_col = max(self._wf_data_start_col, int(range_state["end_col"]) - 1)
+            self._last_point_count_for_click = point_count
 
             self._update_timeseries_from_block(block, cfg_scan, point_count)
             self._sync_transform_params()
@@ -1562,7 +1811,8 @@ class MainWindow(QMainWindow):
                 f"gamma={self.transform.gamma:.2f}, "
                 f"cfg_scan={cfg_scan}, mode={cfg_mode}, pw={pw}, sd={sd}, "
                 f"hist~{self._wf_history_effective_s:.2f}s, lpr={self.renderer.lines_per_row}, "
-                f"lines={num_lines}, points={point_count}, "
+                f"lines={num_lines}, points={point_count}/{original_point_count}, "
+                f"range={self._current_range_text(range_state, scale_down=sd)}, "
                 f"{self._current_column_distance_text(point_count, sd)})"
             )
 

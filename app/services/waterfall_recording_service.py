@@ -163,6 +163,7 @@ class WaterfallRecordingService:
             "point_count": int(payload.get("point_count", block.shape[1]) or block.shape[1]),
             "block": np.array(block, dtype=np.float32, copy=True),
             "chunks_dir": str(chunks_dir),
+            "extra_meta": dict(payload.get("range_filter", {}) or {}),
         }
 
         try:
@@ -288,6 +289,8 @@ class WaterfallRecordingService:
             "point_count": data["point_count"],
             "shape": list(block.shape),
         }
+        if data.get("extra_meta"):
+            meta["range_filter"] = dict(data["extra_meta"])
         self._write_json(meta_path, meta)
         with index_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(meta, ensure_ascii=False, separators=(",", ":")) + "\n")
