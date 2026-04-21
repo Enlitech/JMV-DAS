@@ -16,7 +16,7 @@ from collections import deque
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtGui import QPainter, QDesktopServices
 
-from app.services import DocsService, FibreMonitorService, SwitchService, WaterfallRecordingService
+from app.services import DocsService, FibreMonitorService, SwitchService, VibRecService, WaterfallRecordingService
 from backend.acquisition import AcquisitionWorker
 from backend.compat_http_api import CompatHttpApiServer
 from backend.machine_id import get_machine_id
@@ -199,6 +199,17 @@ class MainWindow(QMainWindow):
         self.record_output_dir = QLineEdit()
         self.record_status = QLabel("Recording: Idle")
         self.record_status.setWordWrap(True)
+        self.vibrec_url = QLineEdit("http://192.168.3.252:8000")
+        self.vibrec_context = QSpinBox()
+        self.vibrec_context.setRange(1, 8)
+        self.vibrec_context.setValue(8)
+        self.vibrec_auto = QCheckBox("Auto Predict Selected Stream")
+        self.vibrec_auto.setChecked(False)
+        self.btn_vibrec_health = QPushButton("Check VibRec")
+        self.btn_vibrec_schema = QPushButton("Fetch VibRec Schema")
+        self.btn_vibrec_predict = QPushButton("Predict Selected Stream")
+        self.vibrec_status = QLabel("VibRec: Idle")
+        self.vibrec_status.setWordWrap(True)
 
         self.machine_id_label = QLabel(f"Machine ID: {self.machine_id}")
         self.machine_id_label.setWordWrap(True)
@@ -296,6 +307,17 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.btn_record_stop)
         control_layout.addWidget(self.record_status)
 
+        control_layout.addSpacing(12)
+        control_layout.addWidget(QLabel("VibRec Base URL"))
+        control_layout.addWidget(self.vibrec_url)
+        control_layout.addWidget(QLabel("VibRec Context Chunks"))
+        control_layout.addWidget(self.vibrec_context)
+        control_layout.addWidget(self.vibrec_auto)
+        control_layout.addWidget(self.btn_vibrec_health)
+        control_layout.addWidget(self.btn_vibrec_schema)
+        control_layout.addWidget(self.btn_vibrec_predict)
+        control_layout.addWidget(self.vibrec_status)
+
         control_layout.addSpacing(16)
         control_layout.addWidget(self.btn_start)
         control_layout.addWidget(self.btn_stop)
@@ -375,6 +397,7 @@ class MainWindow(QMainWindow):
         self.fibre_monitor = FibreMonitorService()
         self.switch_service = SwitchService()
         self.docs_service = DocsService()
+        self.vibrec_service = VibRecService()
         self.recording_service = WaterfallRecordingService()
         self.compat_api = CompatHttpApiServer()
         self.worker.data_ready.connect(self.on_data_ready)
@@ -388,6 +411,9 @@ class MainWindow(QMainWindow):
         self.btn_record_open.clicked.connect(self.on_record_open_clicked)
         self.btn_api_docs.clicked.connect(self.on_api_docs_clicked)
         self.btn_user_guide.clicked.connect(self.on_user_guide_clicked)
+        self.btn_vibrec_health.clicked.connect(self.on_vibrec_health_clicked)
+        self.btn_vibrec_schema.clicked.connect(self.on_vibrec_schema_clicked)
+        self.btn_vibrec_predict.clicked.connect(self.on_vibrec_predict_clicked)
         self.btn_wf_range_use_view.clicked.connect(self.on_wf_range_use_view_clicked)
         self.btn_wf_range_reset.clicked.connect(self.on_wf_range_reset_clicked)
         self.btn_switch_refresh.clicked.connect(self._refresh_switch_ports)
@@ -465,6 +491,11 @@ class MainWindow(QMainWindow):
             "alert_status_by_name": {},
             "fibre_health": [],
         }
+        self._vibrec_schema: dict | None = None
+        self._vibrec_context_by_stream: dict[tuple[int, str], deque] = {}
+        self._vibrec_result_lock = threading.Lock()
+        self._vibrec_pending_result: tuple[str, bool, object] | None = None
+        self._vibrec_busy = False
         self._docs_dialogs: dict[str, tuple[QDialog, QTextBrowser]] = {}
 
         self._update_ts_title()
@@ -565,6 +596,9 @@ class MainWindow(QMainWindow):
         self._settings.setValue("recording/mode", self.record_mode.currentData())
         self._settings.setValue("recording/scope", self.record_scope.currentData())
         self._settings.setValue("recording/output_dir", self.record_output_dir.text())
+        self._settings.setValue("vibrec/url", self.vibrec_url.text())
+        self._settings.setValue("vibrec/context_chunks", self.vibrec_context.value())
+        self._settings.setValue("vibrec/auto_predict", self.vibrec_auto.isChecked())
         self._settings.sync()
 
     def _load_settings(self):
@@ -700,6 +734,14 @@ class MainWindow(QMainWindow):
         output_dir = str(self._settings.value("recording/output_dir", str(self.recording_service.output_root)))
         self.record_output_dir.setText(output_dir)
         self.recording_service.set_output_root(output_dir)
+        self.vibrec_url.setText(str(self._settings.value("vibrec/url", self.vibrec_url.text())))
+        self.vibrec_context.setValue(
+            self._settings_int(self._settings.value("vibrec/context_chunks"), self.vibrec_context.value())
+        )
+        self.vibrec_auto.setChecked(
+            self._settings_bool(self._settings.value("vibrec/auto_predict"), self.vibrec_auto.isChecked())
+        )
+        self.vibrec_service.set_base_url(self.vibrec_url.text())
         self._sync_waterfall_history(clear=False)
         self._update_wf_range_status()
 
@@ -1192,6 +1234,162 @@ class MainWindow(QMainWindow):
             f"Time: Local {self._format_local_datetime(now)} | UTC {self._format_utc_datetime(now)}"
         )
 
+    def _vibrec_base_url(self) -> str:
+        return (self.vibrec_url.text() or "").strip()
+
+    def _vibrec_context_limit(self) -> int:
+        schema_limit = 8
+        if isinstance(self._vibrec_schema, dict):
+            try:
+                schema_limit = max(1, int(self._vibrec_schema.get("max_context_chunks", 8)))
+            except Exception:
+                schema_limit = 8
+        return max(1, min(int(self.vibrec_context.value()), schema_limit))
+
+    def _ensure_vibrec_context(self, stream_key: tuple[int, str]) -> deque:
+        maxlen = max(1, int(self._vibrec_schema.get("max_context_chunks", 8))) if isinstance(self._vibrec_schema, dict) else 8
+        existing = self._vibrec_context_by_stream.get(stream_key)
+        if existing is not None and existing.maxlen == maxlen:
+            return existing
+        items = list(existing)[-maxlen:] if existing is not None else []
+        updated = deque(items, maxlen=maxlen)
+        self._vibrec_context_by_stream[stream_key] = updated
+        return updated
+
+    def _record_vibrec_context(self, payload: dict):
+        ch = int(payload.get("channel", 1))
+        kind = str(payload.get("kind", "phase"))
+        block = np.asarray(payload.get("block"), dtype=np.float32)
+        point_count = int(payload.get("point_count", block.shape[1] if block.ndim == 2 else 0) or 0)
+        if block.ndim != 2 or point_count <= 1:
+            return
+        context = self._ensure_vibrec_context((ch, kind))
+        context.append(
+            {
+                "channel": ch,
+                "kind": kind,
+                "ts": float(payload.get("ts", time.time())),
+                "cfg_scan_rate": payload.get("cfg_scan_rate", self.scan_rate.currentText()),
+                "cfg_scale_down": int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value()),
+                "point_count": point_count,
+                "block": np.array(block, dtype=np.float32, copy=True),
+            }
+        )
+
+    def _build_vibrec_chunk(self, payload: dict, latest_ts: float) -> dict:
+        block = np.asarray(payload["block"], dtype=np.float32)
+        if block.ndim != 2 or block.shape[0] < 2 or block.shape[1] < 2:
+            raise RuntimeError("VibRec requires a 2D block with at least 2 rows and 2 columns.")
+
+        scale_down = int(payload.get("cfg_scale_down", self.scale_down.value()) or self.scale_down.value())
+        spacing_m = self._spacing_m(scale_down)
+        point_count = int(payload.get("point_count", block.shape[1]) or block.shape[1])
+        range_start_m = 0.0
+        range_end_m = max(0.0, (point_count - 1) * spacing_m)
+        if range_end_m < 800.0:
+            raise RuntimeError(
+                f"VibRec expects input covering 600-800 m, but current block ends at {range_end_m:.2f} m."
+            )
+
+        chunk_ts = float(payload.get("ts", latest_ts))
+        return {
+            "block": block.tolist(),
+            "scan_rate_hz": self._parse_scan_rate_hz(str(payload.get("cfg_scan_rate", self.scan_rate.currentText()))),
+            "range_start_m": range_start_m,
+            "range_end_m": range_end_m,
+            "delta_seconds": float(chunk_ts - latest_ts),
+        }
+
+    def _build_vibrec_request(self) -> tuple[dict, tuple[int, str]]:
+        stream_key = self._selected_stream()
+        context = list(self._ensure_vibrec_context(stream_key))
+        if not context:
+            raise RuntimeError("No selected-stream data is available for VibRec prediction yet.")
+
+        take = self._vibrec_context_limit()
+        selected = context[-take:]
+        latest_ts = float(selected[-1]["ts"])
+        chunks = [self._build_vibrec_chunk(item, latest_ts) for item in selected]
+        return {"chunks": chunks}, stream_key
+
+    def _start_vibrec_call(self, action: str, fn):
+        if self._vibrec_busy:
+            self.vibrec_status.setText("VibRec: Busy, wait for the current request to finish")
+            return
+
+        self.vibrec_service.set_base_url(self._vibrec_base_url())
+        self._vibrec_busy = True
+        self.vibrec_status.setText(f"VibRec: {action}...")
+
+        def runner():
+            try:
+                result = fn()
+                outcome = (action, True, result)
+            except Exception as exc:
+                outcome = (action, False, str(exc))
+            with self._vibrec_result_lock:
+                self._vibrec_pending_result = outcome
+
+        threading.Thread(target=runner, name="vibrec-client", daemon=True).start()
+
+    def _poll_vibrec_result(self):
+        with self._vibrec_result_lock:
+            outcome = self._vibrec_pending_result
+            self._vibrec_pending_result = None
+        if outcome is None:
+            return
+
+        self._vibrec_busy = False
+        action, ok, payload = outcome
+        if not ok:
+            self.vibrec_status.setText(f"VibRec: {action} failed: {payload}")
+            return
+
+        if action == "health":
+            status = str(payload.get("status", "unknown"))
+            service = str(payload.get("service", "unknown"))
+            version = str(payload.get("version", "unknown"))
+            self.vibrec_status.setText(f"VibRec: health ok, service={service}, version={version}, status={status}")
+            return
+
+        if action == "schema":
+            self._vibrec_schema = dict(payload)
+            max_context = max(1, int(self._vibrec_schema.get("max_context_chunks", 8)))
+            self.vibrec_context.setMaximum(max_context)
+            if self.vibrec_context.value() > max_context:
+                self.vibrec_context.setValue(max_context)
+            self.vibrec_status.setText(
+                "VibRec: schema ok, "
+                f"model={self._vibrec_schema.get('model_name', 'unknown')}, "
+                f"labels={self._vibrec_schema.get('labels', [])}, "
+                f"max_context={max_context}"
+            )
+            return
+
+        if action == "predict":
+            label = str(payload.get("label", "unknown"))
+            confidence = float(payload.get("confidence", 0.0) or 0.0)
+            valid_chunks = int(payload.get("valid_chunks", 0) or 0)
+            context_len = int(payload.get("context_len", 0) or 0)
+            device = str(payload.get("device", "unknown"))
+            self.vibrec_status.setText(
+                f"VibRec: label={label}, confidence={confidence:.3f}, "
+                f"valid_chunks={valid_chunks}, context_len={context_len}, device={device}"
+            )
+
+    def on_vibrec_health_clicked(self):
+        self._start_vibrec_call("health", self.vibrec_service.health)
+
+    def on_vibrec_schema_clicked(self):
+        self._start_vibrec_call("schema", self.vibrec_service.schema)
+
+    def on_vibrec_predict_clicked(self):
+        def run_predict():
+            payload, _stream_key = self._build_vibrec_request()
+            return self.vibrec_service.predict_actor_raw(payload)
+
+        self._start_vibrec_call("predict", run_predict)
+
     def _recording_metadata(self) -> dict:
         sel_ch, sel_kind = self._selected_stream()
         range_state = self._current_range_filter_state()
@@ -1458,11 +1656,14 @@ class MainWindow(QMainWindow):
             ch = int(payload.get("channel", 1))
             kind = str(payload.get("kind", "phase"))
             self._latest_by_stream[(ch, kind)] = payload
+            self._record_vibrec_context(payload)
             recording_payload = payload
             if self._recording_scope() == "filtered":
                 recording_payload, _ = self._apply_wf_range_filter(payload)
             self.recording_service.handle_payload(recording_payload, selected_stream=self._selected_stream())
             self._update_fibre_break_from_payload(payload)
+            if self.vibrec_auto.isChecked() and not self._vibrec_busy and (ch, kind) == self._selected_stream():
+                self.on_vibrec_predict_clicked()
         except Exception:
             pass
 
@@ -1734,6 +1935,7 @@ class MainWindow(QMainWindow):
         self._ts_axis_y.setRange(ymin, ymax)
 
     def _tick(self):
+        self._poll_vibrec_result()
         self._refresh_recording_status()
         self._update_clock_label()
         payload, sel_ch, sel_kind = self._pull_selected_payload()
