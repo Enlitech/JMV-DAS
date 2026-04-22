@@ -5,7 +5,7 @@ from urllib import error, request
 
 
 class VibRecService:
-    def __init__(self, base_url: str = "http://192.168.3.252:8000", timeout_s: float = 10.0):
+    def __init__(self, base_url: str = "http://127.0.0.1:8000", timeout_s: float = 10.0):
         self.base_url = self._normalize_base_url(base_url)
         self.timeout_s = max(0.5, float(timeout_s))
 
@@ -13,7 +13,7 @@ class VibRecService:
     def _normalize_base_url(base_url: str) -> str:
         text = str(base_url or "").strip()
         if not text:
-            text = "http://192.168.3.252:8000"
+            text = "http://127.0.0.1:8000"
         if not text.startswith(("http://", "https://")):
             text = f"http://{text}"
         return text.rstrip("/")

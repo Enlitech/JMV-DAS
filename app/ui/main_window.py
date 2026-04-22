@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.record_output_dir = QLineEdit()
         self.record_status = QLabel("Recording: Idle")
         self.record_status.setWordWrap(True)
-        self.vibrec_url = QLineEdit("http://192.168.3.252:8000")
+        self.vibrec_url = QLineEdit("http://127.0.0.1:8000")
         self.vibrec_context = QSpinBox()
         self.vibrec_context.setRange(1, 8)
         self.vibrec_context.setValue(8)
