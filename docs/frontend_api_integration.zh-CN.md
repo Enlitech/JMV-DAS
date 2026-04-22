@@ -372,7 +372,7 @@ const payload = {
   ]
 };
 
-const result = await predictActorRaw("http://192.168.3.252:8000", payload);
+const result = await predictActorRaw("http://localhost:8000", payload);
 console.log(result.label, result.confidence);
 ```
 
@@ -387,7 +387,7 @@ const app = express();
 app.use(express.json({ limit: "20mb" }));
 
 app.post("/api/vibrec/predict", async (req, res) => {
-  const response = await fetch("http://192.168.3.252:8000/api/v1/predict/actor/raw", {
+  const response = await fetch("http://vibrec-host:8000/api/v1/predict/actor/raw", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req.body),
@@ -790,7 +790,7 @@ const payload = {
   ]
 };
 
-const result = await predictActorRaw("http://192.168.3.252:8000", payload);
+const result = await predictActorRaw("http://localhost:8000", payload);
 console.log(result.label, result.confidence);
 ```
 
@@ -805,7 +805,7 @@ const app = express();
 app.use(express.json({ limit: "20mb" }));
 
 app.post("/api/vibrec/predict", async (req, res) => {
-  const response = await fetch("http://192.168.3.252:8000/api/v1/predict/actor/raw", {
+  const response = await fetch("http://vibrec-host:8000/api/v1/predict/actor/raw", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req.body),
@@ -902,3 +902,4 @@ POST /api/v1/predict/actor
 6. 对 `422` 做数据校验提示，对 `503` 做服务不可用提示和重试。
 
 如果你的平台有自己的后端层，建议把 VibRec API 封装成你平台内部的一个模型能力接口，再暴露给前端页面使用。
+
